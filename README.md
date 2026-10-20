@@ -6,8 +6,8 @@
 
 [![Python](https://img.shields.io/badge/Python-3.10%2B-3776AB?style=for-the-badge&logo=python&logoColor=white)](https://www.python.org/)
 [![discord.py](https://img.shields.io/badge/discord.py-2.x-5865F2?style=for-the-badge&logo=discord&logoColor=white)](https://github.com/Rapptz/discord.py)
-[![GitHub stars](https://img.shields.io/github/stars/your-username/bgc-bot?style=for-the-badge&logo=github)](https://github.com/your-username/bgc-bot/stargazers)
-[![GitHub issues](https://img.shields.io/github/issues/your-username/bgc-bot?style=for-the-badge&logo=github)](https://github.com/your-username/bgc-bot/issues)
+[![GitHub stars](https://img.shields.io/github/stars/your-username/bgc-bot?style=for-the-badge&logo=github)](https://github.com/pizzarobloxh/bgc-bot/stargazers)
+[![GitHub issues](https://img.shields.io/github/issues/your-username/bgc-bot?style=for-the-badge&logo=github)](https://github.com/pizzarobloxh/bgc-bot/issues)
 
 <br />
 
