@@ -1,6 +1,7 @@
 # Privacy Policy
 
 **Project:** Pizzarobloxh's Discord Bot (generative ai made) 
+
 **Bot:** BGC Bot v4.4.0  
 **Developer:** Pizzarobloxh  
 **Effective Date:** October 20, 2026  
