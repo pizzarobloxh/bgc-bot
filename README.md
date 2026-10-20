@@ -26,8 +26,6 @@
 - [🔎 How the Check Pipeline Works](#-how-the-check-pipeline-works)
 - [🎨 Markdown Feature Showcase](#-markdown-feature-showcase)
 - [🧪 Development & Testing](#-development--testing)
-- [🤝 Contributing](#-contributing)
-- [📜 License](#-license)
 - [🔗 Footnotes](#-footnotes)
 
 ---
@@ -390,11 +388,6 @@ bgc-bot/
 > [!NOTE]
 > Before opening a PR, run `python -m py_compile bgc_bot.py` and confirm `/health quick` still reports green.
 
----
-
-## 📜 License
-
-Distributed under the **MIT License**. See [`LICENSE`](LICENSE) for the full text.
 
 ---
 
