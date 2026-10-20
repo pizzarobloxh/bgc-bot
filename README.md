@@ -405,11 +405,11 @@ No. Every lookup is HTTP → response → store in `bgc.db`. No telemetry, no ex
 
 ## Next steps
 
-- **See every measured number** → [`OPERATING_DOCUMENTS.md`](OPERATING_DOCUMENTS.md)
-- **War stories** → [`OPERATING_DOCUMENTS.md#war-stories`](OPERATING_DOCUMENTS.md#war-stories)
-- **Architecture diagrams** → [`OPERATING_DOCUMENTS.md#architecture`](OPERATING_DOCUMENTS.md#architecture)
-- **Performance comparison** → [`OPERATING_DOCUMENTS.md#version-history`](OPERATING_DOCUMENTS.md#version-history)
-- **Roadmap** → [`OPERATING_DOCUMENTS.md#roadmap`](OPERATING_DOCUMENTS.md#roadmap)
+- **See every measured number** → [`OPERATING_DOCUMENTS.md`](operating_documents.md)
+- **War stories** → [`OPERATING_DOCUMENTS.md#war-stories`](operating_documents.md#war-stories)
+- **Architecture diagrams** → [`OPERATING_DOCUMENTS.md#architecture`](operating_documents.md#architecture)
+- **Performance comparison** → [`OPERATING_DOCUMENTS.md#version-history`](operating_documents.md#version-history)
+- **Roadmap** → [`OPERATING_DOCUMENTS.md#roadmap`](operating_documents.md#roadmap)
 
 <div align="center">
 
