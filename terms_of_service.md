@@ -129,6 +129,7 @@ You agree not to:
 8. impersonate a server administrator, the Developer, or another person to gain access to administrative features;
 9. upload or submit special-category data, such as health data, biometric data, or data revealing racial or ethnic origin, political opinions, religious beliefs, or sexual orientation, to the Bot; or
 10. use the Bot in any way that creates a legal, security, or reputational risk for the Developer or any third party.
+11. You are allowed to change the bots source code found inside of 'bot.py' by doing so you agree to not use my code in any unauthorised way.
 
 ---
 
