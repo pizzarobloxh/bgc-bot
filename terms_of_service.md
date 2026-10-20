@@ -1,6 +1,6 @@
 # Terms of Service
 
-**Developer:** Pizzarobloxh (individual developer)  
+**Developer:** Pizzarobloxh (individual developer, this bot and its terms have been fully created using generative ai)  
 **Bot:** BGC Bot v4.4.0  
 **Effective Date:** October 20, 2026  
 **Last Updated:** October 20, 2026
