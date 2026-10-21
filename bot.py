@@ -1,39 +1,19 @@
-# bgc_bot.py — Discord recruitment background checker
-"""
-BGC Bot — Discord recruitment background checker. (fully made by generative ai) 
-
-Required environment variables:
-    DISCORD_BOT_TOKEN       Discord bot token
-
-Recommended environment variables:
-    XTRACKER_API_KEY        Xtracker API key
-    ROBLOXWATCHER_API_KEY   RobloxWatcher API key
-    EXPLOITWATCHER_API_KEY  ExploitWatcher API key
-    BLOXLINK_API_KEY        Bloxlink server API key (if BLOXLINK_ENABLED)
-    SIMMER_API_KEY          Simmer API key
-
-Optional environment variables:
-    BRAND_NAME              Community/group name shown in embeds & DMs
-    BRAND_GROUP_URL         Roblox group URL inserted into acceptance DM
-    LOGO_EMOJI              Custom Discord emoji tag (e.g. "<:LOGO:123456789012345678>")
-    AUTO_ROLE_ID            Role ID to auto-assign on pass
-    RECRUITMENT_CHANNEL_ID  Default recruitment channel (fallback if /setup not run)
-    OWNER_ID                Discord user ID of the bot owner (DMs on critical errors)
-    ACCEPTANCE_DM_ENABLED   "true" / "false" (default true)
-    ACCEPTANCE_DM_TEMPLATE  Full acceptance DM body (overrides auto-built template)
-    ACCEPTANCE_INSTRUCTIONS_URL  URL to verification instructions appended to DM
-    BLACKLIST_SHEET_ID      Google Sheet ID for the private group/user blacklist
-    GROUP_BLACKLIST_GID     Tab gid for group blacklist (default "0")
-    USER_BLACKLIST_GID      Tab gid for user blacklist
-    SNOW_CORE_SHEET_ID      Google Sheet ID for Snow Core ban list
-    SNOW_CORE_GID           Tab gid for Snow Core (default "0")
-    EXTERNAL_DATABASES      JSON array of {key, sheet_id, gid, name} objects
-    BLOXLINK_ENABLED        "true" / "false" (default true)
-
-The bot will start with only DISCORD_BOT_TOKEN set. Missing optional
-credentials make the corresponding checks return SKIPPED, which is safe.
-"""
-import os
+# bot.py — v5.0.0 (public edition)
+# ============================================================
+# BGC Bot — Discord recruitment background checker
+#
+# Public, sanitized edition. All personal identifiers, API keys,
+# Discord channel IDs, brand-specific text and one-off configuration
+# have been stripped out. Fill in your own values in the CONFIG
+# section below before running.
+#
+# Original author: Pizzarobloxh (github.com/Pizzarobloxh)
+#
+# ============================================================
+# REQUIREMENTS
+#   pip install discord.py aiohttp aiosqlite
+#   pip install aiodns pycares   # optional, enables non-blocking DNS
+# ============================================================
 import discord
 from discord.ext import commands
 from discord import app_commands
@@ -44,105 +24,141 @@ from datetime import datetime, timezone, date, timedelta
 from enum import Enum
 from typing import Optional
 
-# ==================== CONFIG ====================
-# Credentials — set via environment
-DISCORD_BOT_TOKEN       = os.getenv("DISCORD_BOT_TOKEN", "").strip()
-XTRACKER_API_KEY        = os.getenv("XTRACKER_API_KEY", "").strip()
-RW_API_KEY              = os.getenv("ROBLOXWATCHER_API_KEY", "").strip()
-EW_API_KEY              = os.getenv("EXPLOITWATCHER_API_KEY", "").strip()
-BLOXLINK_API_KEY        = os.getenv("BLOXLINK_API_KEY", "").strip()
-SIMMER_API_KEY          = os.getenv("SIMMER_API_KEY", "").strip()
-
-BLOXLINK_ENABLED        = os.getenv("BLOXLINK_ENABLED", "true").lower() == "true"
-
-# Branding — all optional
-BRAND_NAME              = os.getenv("BRAND_NAME", "").strip()
-BRAND_GROUP_URL         = os.getenv("BRAND_GROUP_URL", "").strip()
-LOGO_EMOJI              = os.getenv("LOGO_EMOJI", "").strip()
-
-AUTO_ROLE_ID            = int(os.getenv("AUTO_ROLE_ID", "0") or "0") or None
-DEFAULT_RECRUITMENT_CHANNEL_ID = int(os.getenv("RECRUITMENT_CHANNEL_ID", "0") or "0") or None
-OWNER_ID                = int(os.getenv("OWNER_ID", "0") or "0") or None
-
-# Acceptance DM
-ACCEPTANCE_DM_ENABLED   = os.getenv("ACCEPTANCE_DM_ENABLED", "true").lower() == "true"
-ACCEPTANCE_INSTRUCTIONS_URL = os.getenv("ACCEPTANCE_INSTRUCTIONS_URL", "").strip()
-ACCEPTANCE_DM_TEMPLATE  = os.getenv("ACCEPTANCE_DM_TEMPLATE", "").strip()
-if not ACCEPTANCE_DM_TEMPLATE:
-    _dm_lines = []
-    _dm_lines.append(f"# {LOGO_EMOJI} | ACCEPTANCE NOTICE" if LOGO_EMOJI else "# ACCEPTANCE NOTICE")
-    _dm_lines.append("")
-    _dm_lines.append("▬" * 20)
-    _dm_lines.append("")
-    _dm_lines.append(f"Congratulations, welcome to **{BRAND_NAME}**." if BRAND_NAME else "Congratulations!")
-    if BRAND_GROUP_URL:
-        _dm_lines.append(f"\nPlease join our Roblox group to continue:\n{BRAND_GROUP_URL}")
-    if ACCEPTANCE_INSTRUCTIONS_URL:
-        _dm_lines.append(f"\nThen verify via Bloxlink and follow the instructions here:\n{ACCEPTANCE_INSTRUCTIONS_URL}")
-    else:
-        _dm_lines.append("\nThen verify via Bloxlink to continue.")
-    ACCEPTANCE_DM_TEMPLATE = "\n".join(_dm_lines)
-
-# Blacklist / external data sources — all optional
-BLACKLIST_SHEET_ID      = os.getenv("BLACKLIST_SHEET_ID", "").strip()
-GROUP_BLACKLIST_GID     = os.getenv("GROUP_BLACKLIST_GID", "0").strip() or "0"
-USER_BLACKLIST_GID      = os.getenv("USER_BLACKLIST_GID", "0").strip() or "0"
-SNOW_CORE_SHEET_ID      = os.getenv("SNOW_CORE_SHEET_ID", "").strip()
-SNOW_CORE_GID           = os.getenv("SNOW_CORE_GID", "0").strip() or "0"
-
 try:
-    EXTERNAL_DATABASES = json.loads(os.getenv("EXTERNAL_DATABASES", "[]") or "[]")
-    if not isinstance(EXTERNAL_DATABASES, list):
-        EXTERNAL_DATABASES = []
-except Exception:
-    EXTERNAL_DATABASES = []
+    import aiodns
+    _AIODNS_AVAILABLE = True
+except ImportError:
+    aiodns = None
+    _AIODNS_AVAILABLE = False
 
-# Public external service endpoints — safe to keep as constants
-SIMMER_API_URL          = os.getenv("SIMMER_API_URL", "https://api.simmer.icu")
-KEYSTONE_API_URL        = os.getenv("KEYSTONE_API_URL", "https://api.keystone-swords.com/api/cases")
+# ==================== CONFIG ====================
+# ─── Required ───
+DISCORD_BOT_TOKEN      = "PASTE_YOUR_BOT_TOKEN"
 
-# Tunables
-XTRACKER_RATE_LIMIT     = 1.0
-BLOXLINK_RATE_LIMIT     = 1.1
-BLOXLINK_TIMEOUT        = 5.0
-EXPLOIT_WATCHER_INFORMATIONAL = True
-MISMATCHED_ALT_FAILS    = True
+# ─── Optional API keys (checks that need these will SKIP if missing) ───
+XTRACKER_API_KEY       = "PASTE_YOUR_XTRACKER_KEY"          # xtracker.xyz
+RW_API_KEY             = "PASTE_YOUR_ROBLOXWATCHER_KEY"     # robloxwatcher.com (RW_...)
+EW_API_KEY             = "PASTE_YOUR_EXPLOITWATCHER_KEY"    # robloxwatcher.com (EW_...)
+SIMMER_API_KEY         = "PASTE_YOUR_SIMMER_KEY"            # simmer.icu
+BLOXLINK_API_KEY       = "PASTE_YOUR_BLOXLINK_SERVER_KEY"   # blox.link (server API key)
 
-KEYSTONE_TTL            = 300
-KEYSTONE_DEBOUNCE       = 2.0
-KEYSTONE_FAIL_CLOSED    = False
+# ─── Branding (all optional — leave empty for defaults) ───
+LOGO_EMOJI             = ""    # custom Discord emoji, e.g. "<:LOGO:123456789012345678>"
+BRAND_NAME             = ""    # e.g. "My Clan"
+BRAND_GROUP_URL        = ""    # e.g. "https://www.roblox.com/communities/1234567/..."
+AUTO_ROLE_ID           = 0     # Discord role ID to assign on pass (0 = disabled)
+OWNER_ID               = 0     # your Discord user ID (0 = /reset disabled)
+DEFAULT_RECRUITMENT_CHANNEL_ID = 0  # fallback channel if /setup hasn't been run
 
-EXTERNAL_DB_TTL         = 300
-EXTERNAL_DB_DEBOUNCE    = 2.0
+# ─── Acceptance DM ───
+ACCEPTANCE_DM_ENABLED  = True
+# Leave empty to auto-generate from BRAND_NAME / BRAND_GROUP_URL above.
+ACCEPTANCE_DM_TEMPLATE = ""
+if not ACCEPTANCE_DM_TEMPLATE:
+    _dm_parts = ["# Acceptance Notice", "", "Congratulations"]
+    if BRAND_NAME:
+        _dm_parts[2] += f", welcome to **{BRAND_NAME}**"
+    _dm_parts[2] += "!"
+    _dm_parts.append("")
+    if BRAND_GROUP_URL:
+        _dm_parts.append(f"Please join our Roblox group:\n{BRAND_GROUP_URL}")
+        _dm_parts.append("")
+    _dm_parts.append("Check the server for next steps.")
+    ACCEPTANCE_DM_TEMPLATE = "\n".join(_dm_parts)
 
-MIN_DISCORD_AGE_DAYS    = 7
-DISCORD_AGE_FAIL_IN_LIEU = False
-MULTI_ACCOUNT_FAIL      = False
+# ─── Bloxlink behaviour ───
+BLOXLINK_ENABLED       = True
+BLOXLINK_TIMEOUT       = 5.0
 
-PROGRESS_BAR_LEN        = 16
-PROGRESS_FILLED         = "▓"
-PROGRESS_EMPTY          = "░"
-PROGRESS_MIN_DWELL      = 0.10
+# ─── Your own blacklist (optional) ───
+# A Google Sheet where column B is a Roblox group ID (group blacklist tab)
+# or column B is a Discord user ID (user blacklist tab).
+# Leave BLACKLIST_SHEET_ID empty to disable these checks.
+BLACKLIST_SHEET_ID     = ""
+GROUP_BLACKLIST_GID    = "0"           # gid of the group blacklist tab
+USER_BLACKLIST_GID     = "0"           # gid of the user blacklist tab
+
+# ─── Snow Core (optional) ───
+# Another community's punishment sheet. Columns are expected to match
+# the standard Snow Core layout. Leave empty to disable.
+SNOW_CORE_SHEET_ID     = ""
+SNOW_CORE_GID          = "0"
+
+# ─── External databases (optional) ───
+# Add any number of {key, sheet_id, gid, name} entries. Each is searched
+# for the applicant's Roblox ID / usernames and Discord ID / usernames.
+# Leave empty to skip this check entirely.
+EXTERNAL_DATABASES = [
+    # {"key": "my_alliance", "sheet_id": "1AbCdEf...", "gid": "0", "name": "My Alliance Blacklist"},
+]
+
+# ─── Rate limits ───
+XTRACKER_RATE_LIMIT       = 1.0    # seconds between Xtracker calls (60/min baseline)
+BLOXLINK_RATE_LIMIT       = 1.1    # seconds between Bloxlink calls (official limit ~60/min)
+BLOXLINK_HARD_TIMEOUT_MS  = 1500   # cap Bloxlink wait; falls back to typed username on timeout
+BLOXLINK_LATE_TTL         = 300    # seconds to keep a late Bloxlink result cached
+EXPLOIT_WATCHER_INFORMATIONAL = True  # Exploit Watcher flags are logged, not failing
+MISMATCHED_ALT_FAILS      = True   # treat typed-vs-Bloxlink mismatch as an alt to check
+
+# ─── Check thresholds ───
+MIN_DISCORD_AGE_DAYS     = 7
+DISCORD_AGE_FAIL_IN_LIEU = False    # don't fail underage Discord accounts, just note it
+MULTI_ACCOUNT_FAIL       = False    # multi-account detections are informational
+
+# ─── Progress bar ───
+PROGRESS_BAR_LEN         = 16
+PROGRESS_FILLED          = "▓"
+PROGRESS_EMPTY           = "░"
+PROGRESS_MIN_DWELL       = 0.05
 MAX_PROGRESS_PER_CHANNEL = 2
-EDIT_DEBOUNCE_SEC       = 3.0
-AUTOCOMPLETE_TIMEOUT    = 2.5
 
+# ─── Timing / concurrency ───
+EDIT_DEBOUNCE_SEC        = 1.0
+AUTOCOMPLETE_TIMEOUT     = 1.5
+MAX_CONCURRENT_BGC       = 5
+PARSE_FAILURE_THRESHOLD  = 10
+KEEPALIVE_INTERVAL_SEC   = 15
+RACE_TIMEOUT_SEC         = 10.0
+DLY_REACTION_SEC         = 0.4
+
+# ─── Cache TTLs ───
+BLACKLIST_TTL            = 900
+BLACKLIST_DEBOUNCE       = 0.5
+EXTERNAL_DB_TTL          = 1800
+EXTERNAL_DB_DEBOUNCE     = 0.5
+KEYSTONE_TTL             = 1800
+KEYSTONE_DEBOUNCE        = 0.5
+RECRUITMENT_CACHE_TTL    = 60
+
+# Three-tier preemptive cache
+IDENTITY_TTL_DAYS        = 7   # Bloxlink link, user info, username history
+XTRACKER_CACHE_TTL_DAYS  = 3   # Xtracker results (expensive, rarely change)
+FRESHNESS_TTL_MIN        = 30  # Roblox groups, Simmer RAB (mutable)
+PREEMPTIVE_CLEANUP_DAYS  = 30
+
+# ─── BGC stages (progress display) ───
 BGC_STAGES = ["Parsing application", "Resolving account", "Verifying account",
               "Cross-referencing records", "Running integrity checks", "Finalizing"]
 BGC_STAGE_EMOJI = ["🔍", "🔎", "📅", "🔗", "🛡️", "⚙️"]
 
-DB_PATH  = os.getenv("DB_PATH", "bgc.db")
-LOG_FILE = os.getenv("LOG_FILE", "bgc.log")
-HEALTH_TEST_ROBLOX_ID  = int(os.getenv("HEALTH_TEST_ROBLOX_ID", "0") or "0") or None
-HEALTH_TEST_DISCORD_ID = int(os.getenv("HEALTH_TEST_DISCORD_ID", "0") or "0") or None
+# ─── System ───
+DB_PATH                = "bgc.db"
+LOG_FILE               = "bgc.log"
+HEALTH_TEST_ROBLOX_ID  = None   # optional: for /health timeline
+HEALTH_TEST_DISCORD_ID = None   # optional: for /health timeline
 
-BLACKLIST_TTL           = 300
-BLACKLIST_DEBOUNCE      = 2.0
-BOT_VERSION             = "4.5.0"
-CHECKS_VERSION          = 19
-MAX_CONCURRENT_BGC      = 5
-PARSE_FAILURE_THRESHOLD = 10
+KEYSTONE_API_URL       = "https://api.keystone-swords.com/api/cases"
+KEYSTONE_FAIL_CLOSED   = False
+SIMMER_API_URL         = "https://api.simmer.icu"
+
+BOT_VERSION            = "5.0.0"
+CHECKS_VERSION         = 20
 # ================================================
+
+# ── Made by Pizzarobloxh ──
+# Attribution kept in the user-agent string and log output.
+BOT_AUTHOR             = "Pizzarobloxh"
+BOT_AUTHOR_URL         = "https://github.com/Pizzarobloxh"
 
 logger = logging.getLogger("bgc"); logger.setLevel(logging.INFO)
 if not logger.handlers:
@@ -151,8 +167,65 @@ if not logger.handlers:
     try:
         _f = logging.handlers.RotatingFileHandler(LOG_FILE, maxBytes=10_000_000, backupCount=5)
         _f.setFormatter(_fmt); logger.addHandler(_f)
-    except Exception:
-        pass
+    except Exception: pass
+
+# ==================== MODULE-LEVEL CACHES ====================
+_roblox_name_to_id            = {}
+_roblox_info_cache            = {}
+_roblox_hist_cache            = {}
+_roblox_groups_cache          = {}
+_simmer_cache                 = {}
+_guild_log_cache              = {}
+_recruitment_channel_cache    = {}
+_race_winners                 = {}
+_external_db_etags            = {}
+_bloxlink_late_cache          = {}
+
+ROBLOX_LOOKUP_TTL = 1800
+ROBLOX_INFO_TTL   = 600
+ROBLOX_HIST_TTL   = 1800
+ROBLOX_GROUPS_TTL = 600
+SIMMER_TTL        = 600
+GUILD_LOG_TTL     = 60
+RACE_WINNERS_TTL  = 600
+
+_pending_preemptive = set()
+
+_TOKEN_BLOCKLIST = {
+    "sent","permanent","available","unavailable","evidence","none","null",
+    "yes","no","true","false","n/a","na","tbd","unknown","pending","approved",
+    "denied","expired","lifted","active","inactive","banned","clean",
+}
+
+
+def _record_race_winner(key, domain):
+    _race_winners[key] = (domain, time.time())
+    if len(_race_winners) > 500:
+        now = time.time()
+        for k in list(_race_winners.keys()):
+            if now - _race_winners[k][1] > RACE_WINNERS_TTL:
+                _race_winners.pop(k, None)
+
+
+def _resolved(value, err=""):
+    fut = asyncio.get_event_loop().create_future()
+    fut.set_result((value, err))
+    return fut
+
+
+def _resolved_direct(value):
+    fut = asyncio.get_event_loop().create_future()
+    fut.set_result(value)
+    return fut
+
+
+def _store_late_bloxlink(did, gid, rid, status):
+    now = time.time()
+    _bloxlink_late_cache[(did, gid)] = (rid, status, now)
+    if len(_bloxlink_late_cache) > 200:
+        for k in list(_bloxlink_late_cache.keys()):
+            if now - _bloxlink_late_cache[k][2] > BLOXLINK_LATE_TTL:
+                _bloxlink_late_cache.pop(k, None)
 
 
 class T:
@@ -178,9 +251,9 @@ class T:
 
 
 def branded(text: str) -> str:
-    if not text:
-        return LOGO_EMOJI or ""
-    return f"{LOGO_EMOJI} | {text}" if LOGO_EMOJI else text
+    if not text: return LOGO_EMOJI or ""
+    if not LOGO_EMOJI: return text
+    return f"{LOGO_EMOJI} | {text}"
 
 def ts_tag(dt, style="R"):
     return f"<t:{int(dt.timestamp())}:{style}>"
@@ -231,9 +304,50 @@ class RateLimiter:
             self.last = time.monotonic()
 
 
+class AdaptiveRateLimiter:
+    def __init__(self, base_interval, max_multiplier=4.0, decay_sec=60.0):
+        self.base = base_interval
+        self.interval = base_interval
+        self.max_multiplier = max_multiplier
+        self.decay_sec = decay_sec
+        self.last = 0.0
+        self.lock = asyncio.Lock()
+        self._consecutive_429s = 0
+        self._last_429_ts = 0.0
+
+    async def acquire(self):
+        async with self.lock:
+            now = time.monotonic()
+            wait = self.interval - (now - self.last)
+            if wait > 0:
+                await asyncio.sleep(wait)
+            self.last = time.monotonic()
+
+    def report_429(self):
+        self._consecutive_429s += 1
+        self._last_429_ts = time.monotonic()
+        mult = min(2 ** self._consecutive_429s, self.max_multiplier)
+        new_interval = self.base * mult
+        if new_interval != self.interval:
+            logger.warning(f"Xtracker 429 → limiter bumped {self.interval:.2f}s → {new_interval:.2f}s "
+                           f"({self._consecutive_429s} consecutive, {mult:.1f}x)")
+            self.interval = new_interval
+
+    def report_ok(self):
+        if self._consecutive_429s > 0 and (time.monotonic() - self._last_429_ts) > self.decay_sec:
+            self._consecutive_429s = max(0, self._consecutive_429s - 1)
+            mult = min(2 ** self._consecutive_429s, self.max_multiplier)
+            new_interval = self.base * mult
+            if new_interval != self.interval:
+                logger.info(f"Xtracker limiter decayed {self.interval:.2f}s → {new_interval:.2f}s")
+                self.interval = new_interval
+
+
 intents = discord.Intents.default()
-intents.message_content = True; intents.guilds = True
-intents.reactions = True; intents.members = True
+intents.message_content = True
+intents.guilds = True
+intents.members = True
+intents.guild_typing = True
 
 
 class BGCBot(commands.Bot):
@@ -247,10 +361,15 @@ class BGCBot(commands.Bot):
         self.keystone_lock = asyncio.Lock()
         self.snow_core_lock = asyncio.Lock()
         self.external_db_lock = asyncio.Lock()
-        self.xtracker_limiter = RateLimiter(XTRACKER_RATE_LIMIT)
+        self.xtracker_limiter = AdaptiveRateLimiter(XTRACKER_RATE_LIMIT, max_multiplier=4.0, decay_sec=60.0)
         self.bloxlink_limiter = RateLimiter(BLOXLINK_RATE_LIMIT)
         self._shutdown_started = False
         self._online_logged = False
+        self._domain_dead_until = defaultdict(float)
+        self._domain_error_count = defaultdict(int)
+        self._metrics_preemptive_hits = 0
+        self._metrics_preemptive_misses = 0
+        self._metrics_bloxlink_timeouts = 0
         self._reset_caches()
 
     def _reset_caches(self):
@@ -262,24 +381,70 @@ class BGCBot(commands.Bot):
         self._active_progress_per_channel = defaultdict(int)
         self.consecutive_parse_failures = 0
         self.parse_failure_notified = False
+        self._domain_dead_until.clear()
+        self._domain_error_count.clear()
+        _roblox_name_to_id.clear()
+        _roblox_info_cache.clear()
+        _roblox_hist_cache.clear()
+        _roblox_groups_cache.clear()
+        _simmer_cache.clear()
+        _guild_log_cache.clear()
+        _recruitment_channel_cache.clear()
+        _race_winners.clear()
+        _external_db_etags.clear()
+        _bloxlink_late_cache.clear()
+        _pending_preemptive.clear()
+
+    def _mark_domain_error(self, domain):
+        self._domain_error_count[domain] += 1
+        if self._domain_error_count[domain] >= 3:
+            self._domain_dead_until[domain] = time.monotonic() + 60
+            self._domain_error_count[domain] = 0
+
+    def _mark_domain_ok(self, domain):
+        self._domain_error_count[domain] = 0
+        self._domain_dead_until[domain] = 0.0
+
+    def _filter_healthy(self, domains):
+        now = time.monotonic()
+        healthy = [d for d in domains if self._domain_dead_until[d] <= now]
+        return healthy or list(domains)
 
     async def setup_hook(self):
         self._reset_caches()
-        connector = aiohttp.TCPConnector(limit=200, limit_per_host=40,
-                                          ttl_dns_cache=300, enable_cleanup_closed=True)
-        self.session = aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=15), connector=connector)
+        connector_kwargs = dict(
+            limit=200, limit_per_host=40, ttl_dns_cache=3600,
+            keepalive_timeout=90, enable_cleanup_closed=True,
+        )
+        if _AIODNS_AVAILABLE:
+            logger.info("aiodns installed — aiohttp will use it for non-blocking DNS")
+        else:
+            logger.info("aiodns not installed — using stdlib resolver (blocking)")
+        connector = aiohttp.TCPConnector(**connector_kwargs)
+        self.session = aiohttp.ClientSession(
+            timeout=aiohttp.ClientTimeout(total=10),
+            connector=connector,
+            headers={
+                "Accept-Encoding": "gzip, deflate, br",
+                # ── Made by Pizzarobloxh ──
+                "User-Agent": f"BGC-Bot/{BOT_VERSION} (made-by-{BOT_AUTHOR.lower()}; +discord-bot)",
+            },
+        )
         self.db = await aiosqlite.connect(DB_PATH)
         await self.db.execute("PRAGMA journal_mode=WAL")
         await self.db.execute("PRAGMA synchronous=NORMAL")
+        await self.db.execute("PRAGMA cache_size=-20000")
         await self._init_db()
         now_mono = time.monotonic()
         self.xtracker_limiter.last = now_mono - self.xtracker_limiter.interval
         self.bloxlink_limiter.last = now_mono - self.bloxlink_limiter.interval
         try: await self.tree.sync()
         except Exception as e: logger.error(f"Command sync failed: {e}")
+        asyncio.create_task(_warm_dns())
         asyncio.create_task(_warm_caches())
         asyncio.create_task(_cache_keep_warm_loop())
-        logger.info("Setup complete")
+        asyncio.create_task(_keep_connections_warm_loop())
+        logger.info(f"Setup complete (aiodns={'on' if _AIODNS_AVAILABLE else 'off'})")
 
     async def _init_db(self):
         await self.db.executescript("""
@@ -297,11 +462,28 @@ class BGCBot(commands.Bot):
         CREATE INDEX IF NOT EXISTS idx_bgc_message ON bgc_checks(message_id);
         CREATE INDEX IF NOT EXISTS idx_bgc_discord ON bgc_checks(discord_id, guild_id);
         CREATE INDEX IF NOT EXISTS idx_bgc_roblox ON bgc_checks(roblox_id, guild_id);
+        CREATE TABLE IF NOT EXISTS preemptive_scans (
+            discord_id INTEGER NOT NULL,
+            guild_id INTEGER NOT NULL,
+            bloxlink_roblox_id INTEGER,
+            bloxlink_status TEXT,
+            roblox_info TEXT,
+            username_history TEXT,
+            user_groups TEXT,
+            xtracker_by_id TEXT,
+            simmer_rab TEXT,
+            identity_scanned_at TEXT,
+            xtracker_scanned_at TEXT,
+            freshness_scanned_at TEXT,
+            PRIMARY KEY (discord_id, guild_id)
+        );
         """)
         await self.db.commit()
         await self._ensure_column("bgc_checks", "bot_version", "TEXT")
         await self._ensure_column("bgc_checks", "checks_version", "INTEGER")
         await self._ensure_column("guild_settings", "recruitment_channel", "INTEGER")
+        await self._ensure_column("preemptive_scans", "xtracker_by_id", "TEXT")
+        await self._ensure_column("preemptive_scans", "xtracker_scanned_at", "TEXT")
 
     async def _ensure_column(self, table, column, coltype):
         async with self.db.execute(f"PRAGMA table_info({table})") as cur:
@@ -340,21 +522,35 @@ async def db_fetchall(sql, params=()):
             return await cur.fetchall()
 
 async def get_log_channels(gid):
+    now = time.time()
+    hit = _guild_log_cache.get(gid)
+    if hit and now - hit[3] < GUILD_LOG_TTL:
+        return hit[0], hit[1], hit[2]
     row = await db_fetchone("SELECT pass_log_channel, fail_log_channel, bot_log_channel FROM guild_settings WHERE guild_id=?", (gid,))
-    return row if row else (None, None, None)
+    result = row if row else (None, None, None)
+    _guild_log_cache[gid] = (result[0], result[1], result[2], time.time())
+    return result
 
 async def set_log_channels(gid, p, f, b):
     await db_execute("""INSERT INTO guild_settings (guild_id, pass_log_channel, fail_log_channel, bot_log_channel)
         VALUES (?, ?, ?, ?) ON CONFLICT(guild_id) DO UPDATE SET pass_log_channel=excluded.pass_log_channel,
         fail_log_channel=excluded.fail_log_channel, bot_log_channel=excluded.bot_log_channel""", (gid, p, f, b))
+    _guild_log_cache.pop(gid, None)
 
 async def get_recruitment_channel(gid):
+    now = time.time()
+    hit = _recruitment_channel_cache.get(gid)
+    if hit and now - hit[1] < RECRUITMENT_CACHE_TTL:
+        return hit[0]
     row = await db_fetchone("SELECT recruitment_channel FROM guild_settings WHERE guild_id=?", (gid,))
-    return row[0] if (row and row[0]) else DEFAULT_RECRUITMENT_CHANNEL_ID
+    result = row[0] if (row and row[0]) else DEFAULT_RECRUITMENT_CHANNEL_ID
+    _recruitment_channel_cache[gid] = (result, time.time())
+    return result
 
 async def set_recruitment_channel(gid, cid):
     await db_execute("""INSERT INTO guild_settings (guild_id, recruitment_channel) VALUES (?, ?)
         ON CONFLICT(guild_id) DO UPDATE SET recruitment_channel=excluded.recruitment_channel""", (gid, cid))
+    _recruitment_channel_cache.pop(gid, None)
 
 async def is_already_checked(mid):
     row = await db_fetchone("SELECT 1 FROM bgc_checks WHERE message_id=?", (mid,))
@@ -401,10 +597,299 @@ def _caches_hot() -> bool:
     return True
 
 
+# ==================== PREEMPTIVE SCAN ====================
+async def _preemptive_lookup(discord_id, guild_id):
+    if not discord_id or not guild_id: return None
+    row = await db_fetchone(
+        "SELECT bloxlink_roblox_id, bloxlink_status, roblox_info, username_history, "
+        "user_groups, xtracker_by_id, xtracker_scanned_at, simmer_rab, "
+        "identity_scanned_at, freshness_scanned_at "
+        "FROM preemptive_scans WHERE discord_id=? AND guild_id=?",
+        (discord_id, guild_id))
+    if not row: return None
+    now = datetime.now(timezone.utc)
+    id_time = parse_iso(row[8]) if row[8] else None
+    xt_time = parse_iso(row[6]) if row[6] else None
+    fresh_time = parse_iso(row[9]) if row[9] else None
+    id_fresh = bool(id_time and (now - id_time).days < IDENTITY_TTL_DAYS)
+    xtracker_fresh = bool(xt_time and (now - xt_time).days < XTRACKER_CACHE_TTL_DAYS)
+    fresh_fresh = bool(fresh_time and (now - fresh_time).total_seconds() < FRESHNESS_TTL_MIN * 60)
+    if not (id_fresh or xtracker_fresh or fresh_fresh):
+        return None
+    xt_by_id = {}
+    if xtracker_fresh and row[5]:
+        try: xt_by_id = json.loads(row[5])
+        except: xt_by_id = {}
+    return {
+        "blox_id": row[0],
+        "blox_status": row[1],
+        "info": json.loads(row[2]) if row[2] and id_fresh else None,
+        "hist": json.loads(row[3]) if row[3] and id_fresh else None,
+        "groups": json.loads(row[4]) if row[4] and fresh_fresh else None,
+        "xtracker_by_id": xt_by_id,
+        "xtracker_scanned_at": row[6] if xtracker_fresh else None,
+        "simmer": json.loads(row[7]) if row[7] and fresh_fresh else None,
+        "id_fresh": id_fresh,
+        "xtracker_fresh": xtracker_fresh,
+        "fresh_fresh": fresh_fresh,
+    }
+
+
+async def _preemptive_scan(user, guild, key):
+    """Fired on typing. Bloxlink + nickname in parallel, then multi-ID Xtracker.
+    Saves identity the moment it resolves; saves xtracker+freshness after."""
+    session = bot.session
+    try:
+        now = datetime.now(timezone.utc)
+        row = await db_fetchone(
+            "SELECT bloxlink_roblox_id, identity_scanned_at, xtracker_scanned_at, freshness_scanned_at "
+            "FROM preemptive_scans WHERE discord_id=? AND guild_id=?",
+            (user.id, guild.id))
+        cached_rid = row[0] if row else None
+        id_scanned = parse_iso(row[1]) if row and row[1] else None
+        xt_scanned = parse_iso(row[2]) if row and row[2] else None
+        fresh_scanned = parse_iso(row[3]) if row and row[3] else None
+
+        need_identity = not (id_scanned and (now - id_scanned).days < IDENTITY_TTL_DAYS)
+        need_xtracker = not (xt_scanned and (now - xt_scanned).days < XTRACKER_CACHE_TTL_DAYS)
+        need_freshness = not (fresh_scanned and (now - fresh_scanned).total_seconds() < FRESHNESS_TTL_MIN * 60)
+
+        if not (need_identity or need_xtracker or need_freshness):
+            return  # everything fresh — silent
+
+        needs = []
+        if need_identity: needs.append("identity")
+        if need_xtracker: needs.append("xtracker")
+        if need_freshness: needs.append("freshness")
+        await bot_log(guild.id, "🧠 Preemptive scan started",
+                      f"{user.mention} (`{user.id}`)\nRefreshing: **{', '.join(needs)}**",
+                      color=T.INFO)
+
+        bloxlink_task = None
+        if need_identity and BLOXLINK_ENABLED:
+            bloxlink_task = asyncio.create_task(bloxlink_discord_to_roblox(session, guild.id, user.id))
+
+        nickname_task = None
+        nickname = (getattr(user, "nick", None) or "").strip().lstrip("@")
+        if nickname and re.fullmatch(r'[A-Za-z0-9_]{3,20}', nickname):
+            nickname_task = asyncio.create_task(roblox_user_lookup(session, nickname))
+
+        blox_id, blox_status, nickname_id = None, None, None
+        pending = [t for t in (bloxlink_task, nickname_task) if t is not None]
+        if pending:
+            results = await asyncio.gather(*pending, return_exceptions=True)
+            for task, result in zip(pending, results):
+                if isinstance(result, Exception):
+                    logger.debug(f"Preemptive lookup raised: {type(result).__name__}: {result}")
+                    continue
+                if task is bloxlink_task:
+                    blox_id, blox_status = result
+                elif task is nickname_task:
+                    nick_res, _ = result
+                    if nick_res: nickname_id = nick_res["id"]
+
+        primary = blox_id or nickname_id or cached_rid
+
+        info, hist = None, None
+        identity_ts = None
+        if need_identity and primary:
+            info_result, hist_result = await asyncio.gather(
+                roblox_user_info(session, primary),
+                roblox_username_history(session, primary),
+                return_exceptions=True)
+            if isinstance(info_result, tuple): info = info_result[0]
+            if isinstance(hist_result, tuple): hist = hist_result[0]
+            if blox_status in ("ok", "not_linked", None):
+                identity_ts = now.isoformat()
+
+        if identity_ts:
+            async with bot.db_lock:
+                await bot.db.execute("""
+                    INSERT INTO preemptive_scans
+                        (discord_id, guild_id, bloxlink_roblox_id, bloxlink_status,
+                         roblox_info, username_history, identity_scanned_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?)
+                    ON CONFLICT(discord_id, guild_id) DO UPDATE SET
+                        bloxlink_roblox_id=COALESCE(excluded.bloxlink_roblox_id, preemptive_scans.bloxlink_roblox_id),
+                        bloxlink_status=COALESCE(excluded.bloxlink_status, preemptive_scans.bloxlink_status),
+                        roblox_info=COALESCE(excluded.roblox_info, preemptive_scans.roblox_info),
+                        username_history=COALESCE(excluded.username_history, preemptive_scans.username_history),
+                        identity_scanned_at=excluded.identity_scanned_at
+                """, (user.id, guild.id, blox_id or cached_rid, blox_status,
+                       json.dumps(info) if info else None,
+                       json.dumps(hist) if hist else None,
+                       identity_ts))
+                await bot.db.commit()
+            await bot_log(guild.id, "🧠 Identity cached",
+                          f"{user.mention} — bloxlink: `{blox_id or 'none'}` (`{blox_status}`) · "
+                          f"nickname: `{nickname_id or 'none'}`",
+                          color=T.SUCCESS)
+
+        all_ids = set()
+        if blox_id: all_ids.add(int(blox_id))
+        if nickname_id: all_ids.add(int(nickname_id))
+        if cached_rid: all_ids.add(int(cached_rid))
+        try:
+            hist_db = await get_all_roblox_history(user.id, guild.id)
+            for hid, _ in hist_db:
+                if hid: all_ids.add(int(hid))
+        except Exception: pass
+
+        xt_tasks = {}
+        if need_xtracker and all_ids and XTRACKER_API_KEY and not XTRACKER_API_KEY.startswith("PASTE"):
+            for rid in all_ids:
+                xt_tasks[f"reg_{rid}"] = asyncio.create_task(xtracker_check(session, "registry/user", rid))
+                xt_tasks[f"own_{rid}"] = asyncio.create_task(xtracker_check(session, "ownership/user", rid))
+
+        groups_task = None
+        simmer_task = None
+        if need_freshness and primary:
+            groups_task = asyncio.create_task(roblox_user_groups(session, primary))
+            if SIMMER_API_KEY and not SIMMER_API_KEY.startswith("PASTE"):
+                simmer_task = asyncio.create_task(simmer_rab_check(session, primary))
+
+        xt_by_id = {}
+        if xt_tasks:
+            xt_results = await asyncio.gather(*xt_tasks.values(), return_exceptions=True)
+            for (k, _t), res in zip(xt_tasks.items(), xt_results):
+                if isinstance(res, Exception): continue
+                if k.startswith("reg_"):
+                    rid = int(k[4:])
+                    xt_by_id.setdefault(rid, {})["reg"] = res
+                elif k.startswith("own_"):
+                    rid = int(k[4:])
+                    xt_by_id.setdefault(rid, {})["own"] = res
+
+        groups = None
+        simmer = None
+        fresh_ts = None
+        if groups_task:
+            if simmer_task:
+                gr, sr = await asyncio.gather(groups_task, simmer_task, return_exceptions=True)
+                if isinstance(gr, tuple): groups = gr[0]
+                if isinstance(sr, dict): simmer = sr
+            else:
+                gr = await groups_task
+                if isinstance(gr, tuple): groups = gr[0]
+            fresh_ts = now.isoformat()
+
+        if need_xtracker and xt_by_id:
+            async with bot.db_lock:
+                await bot.db.execute("""
+                    UPDATE preemptive_scans SET
+                        xtracker_by_id=?, xtracker_scanned_at=?
+                    WHERE discord_id=? AND guild_id=?
+                """, (json.dumps({str(k): v for k, v in xt_by_id.items()}),
+                       now.isoformat(), user.id, guild.id))
+                await bot.db.commit()
+
+        if fresh_ts:
+            async with bot.db_lock:
+                await bot.db.execute("""
+                    UPDATE preemptive_scans SET
+                        user_groups=?, simmer_rab=?, freshness_scanned_at=?
+                    WHERE discord_id=? AND guild_id=?
+                """, (json.dumps(groups) if groups is not None else None,
+                       json.dumps(simmer) if simmer else None,
+                       fresh_ts, user.id, guild.id))
+                await bot.db.commit()
+
+        xt_summary_lines = []
+        for rid in sorted(xt_by_id.keys()):
+            data = xt_by_id[rid]
+            reg = data.get("reg", {})
+            own = data.get("own", {})
+            reg_st = reg.get("status", "?") if isinstance(reg, dict) else "?"
+            own_st = own.get("status", "?") if isinstance(own, dict) else "?"
+            flag = "🔴" if (reg_st == CheckStatus.HIT or own_st == CheckStatus.HIT) else "🟢"
+            xt_summary_lines.append(f"{flag} `{rid}`: reg={reg_st} own={own_st}")
+
+        simmer_st = simmer.get("status", "skipped") if simmer else "skipped"
+        groups_st = "checked" if groups is not None else "skipped"
+        await bot_log(guild.id, "🧠 Preemptive scan complete",
+                      f"{user.mention} (`{user.id}`)\n"
+                      f"**IDs:** {', '.join(f'`{i}`' for i in sorted(all_ids)) or 'none'}\n"
+                      f"**Xtracker:**\n" + ("\n".join(xt_summary_lines) if xt_summary_lines else "_(skipped)_") + "\n"
+                      f"**Groups:** {groups_st} · **Simmer:** {simmer_st}",
+                      color=T.SUCCESS)
+
+    except Exception as e:
+        logger.warning(f"Preemptive scan failed for {user.id}: {e}", exc_info=True)
+        try:
+            await bot_log(guild.id, "🔴 Preemptive scan failed",
+                          f"{user.mention} — `{type(e).__name__}: {str(e)[:200]}`",
+                          color=T.DANGER)
+        except: pass
+    finally:
+        _pending_preemptive.discard(key)
+
+
+@bot.event
+async def on_typing(channel, user, when):
+    if bot.db is None: return
+    if not isinstance(channel, discord.TextChannel): return
+    if not isinstance(user, discord.Member): return
+    if user.bot or is_privileged_member(user): return
+    if channel.guild is None: return
+    try:
+        rc = await get_recruitment_channel(channel.guild.id)
+    except Exception:
+        return
+    if not rc or channel.id != rc: return
+    key = (user.id, channel.guild.id)
+    if key in _pending_preemptive: return
+    _pending_preemptive.add(key)
+    logger.debug(f"on_typing → firing preemptive scan for {user.id}")
+    asyncio.create_task(_preemptive_scan(user, channel.guild, key))
+
+
+# ==================== RACE HELPER ====================
+async def _race_200(session, domains, path, *, timeout=RACE_TIMEOUT_SEC):
+    domains = bot._filter_healthy(domains)
+    errors = []
+    got_404 = False
+
+    async def _try(domain):
+        nonlocal got_404
+        try:
+            async with session.get(
+                f"https://{domain}{path}",
+                timeout=aiohttp.ClientTimeout(total=timeout),
+            ) as r:
+                if r.status == 200:
+                    bot._mark_domain_ok(domain)
+                    return ("ok", await r.json(), domain, None)
+                if r.status == 404:
+                    got_404 = True
+                else:
+                    bot._mark_domain_error(domain)
+                return ("err", None, None, f"{domain}: HTTP {r.status}")
+        except asyncio.TimeoutError:
+            bot._mark_domain_error(domain); return ("err", None, None, f"{domain}: timeout")
+        except aiohttp.ClientConnectorError:
+            bot._mark_domain_error(domain); return ("err", None, None, f"{domain}: conn")
+        except Exception as e:
+            bot._mark_domain_error(domain); return ("err", None, None, f"{domain}: {type(e).__name__}")
+
+    tasks = [asyncio.create_task(_try(d)) for d in domains]
+    try:
+        for fut in asyncio.as_completed(tasks):
+            kind, val, domain, err = await fut
+            if kind == "ok":
+                for t in tasks:
+                    if not t.done(): t.cancel()
+                return val, None, domain, False
+            errors.append(err)
+        return None, " | ".join(errors), None, got_404
+    finally:
+        for t in tasks:
+            if not t.done(): t.cancel()
+
+
 # ==================== BLOXLINK ====================
 async def bloxlink_discord_to_roblox(session, gid, did):
     if not BLOXLINK_ENABLED: return None, "disabled"
-    if not BLOXLINK_API_KEY: return None, "disabled"
+    if not BLOXLINK_API_KEY or BLOXLINK_API_KEY.startswith("PASTE"): return None, "disabled"
     if not gid or not did: return None, "missing_ids"
     await bot.bloxlink_limiter.acquire()
     url = f"https://api.blox.link/v4/public/guilds/{gid}/discord-to-roblox/{did}"
@@ -440,11 +925,13 @@ def build_external_index(records):
             if disp is None: continue
             for tok in re.split(r'[\s,|]+', str(disp)):
                 tok = tok.strip().strip('()<>[]"\'').lstrip("@").rstrip(".,;:")
-                if tok: idx.setdefault(tok.lower(), []).append((rec, ci, tok))
+                if not tok: continue
+                if tok.lower() in _TOKEN_BLOCKLIST: continue
+                idx.setdefault(tok.lower(), []).append((rec, ci, tok))
     return idx
 
 
-def search_external_index(idx, rbx_ids, rbx_names, discord_ids, discord_names):
+def search_external_index(idx, col_types, rbx_ids, rbx_names, discord_ids, discord_names):
     found = {}
     pairs = ([(t, "discord_id") for t in discord_ids] +
              [(t, "rbx_id") for t in rbx_ids] +
@@ -452,6 +939,9 @@ def search_external_index(idx, rbx_ids, rbx_names, discord_ids, discord_names):
              [(t.lower(), "discord_username") for t in discord_names])
     for token, mtype in pairs:
         for (rec, ci, orig_tok) in idx.get(token.lower(), ()):
+            ct = col_types.get(ci, "other")
+            if ct != "other" and ct != mtype:
+                continue
             key = id(rec)
             entry = found.setdefault(key, {"record": rec, "matches": []})
             if not any(m["col_idx"] == ci for m in entry["matches"]):
@@ -478,7 +968,10 @@ def detect_column_types(records, col_labels):
         if h in ("user id","userid","id","playerid"): return "rbx_id"
         if h in ("roblox","roblox user","rbx user","main account","alt account","account","main","alt"): return "rbx_username"
         if any(k in h for k in ("reason","punish","duration","date","evidence","note","additional",
-                                "criteria","category","administrator","status","issued")): return "other"
+                                "criteria","category","administrator","status","issued",
+                                "sent","appeal","profile","link","ban","flag",
+                                "available","unavailable","restricted","delivered")):
+            return "other"
         return None
 
     result = {}
@@ -518,11 +1011,31 @@ async def fetch_external_db(session, cfg, force_refresh=False):
         if cached is not None:
             if not force_refresh and now - ts < EXTERNAL_DB_TTL: return cached, None
             if force_refresh and now - ts < EXTERNAL_DB_DEBOUNCE: return cached, None
-    url = f"https://docs.google.com/spreadsheets/d/{cfg['sheet_id']}/gviz/tq?tqx=out%3Ajson&gid={cfg['gid']}&tq=select%20*"
+
+    base_url = f"https://docs.google.com/spreadsheets/d/{cfg['sheet_id']}/gviz/tq?tqx=out%3Ajson&gid={cfg['gid']}&tq=select%20*"
+    headers = {}
+    if force_refresh:
+        ts_ms = int(time.time() * 1000)
+        url = f"{base_url}&_nocache={ts_ms}"
+        headers["Cache-Control"] = "no-cache"
+    else:
+        url = base_url
+        headers["Cache-Control"] = "no-cache"
+        etag = _external_db_etags.get(key)
+        if etag:
+            headers["If-None-Match"] = etag
+
     try:
-        async with session.get(url, headers={"Cache-Control": "no-cache"},
+        async with session.get(url, headers=headers,
                                 timeout=aiohttp.ClientTimeout(total=25)) as r:
+            if r.status == 304 and cached is not None:
+                async with bot.external_db_lock:
+                    bot.external_db_cache[key] = (cached, time.time())
+                return cached, None
             if r.status != 200: return None, f"HTTP {r.status}"
+            new_etag = r.headers.get("ETag") or r.headers.get("etag")
+            if new_etag:
+                _external_db_etags[key] = new_etag
             js = strip_gviz_wrapper(await r.text())
             if js is None: return None, "no wrapper"
             try: data = json.loads(js)
@@ -551,13 +1064,13 @@ async def fetch_external_db(session, cfg, force_refresh=False):
 
 
 async def search_external_dbs(session, identities, force_refresh=False):
+    if not EXTERNAL_DATABASES:
+        return {"matches_by_db": {}, "errors": []}
     rbx_ids = {str(x) for x in identities.get("rbx_ids", set()) if str(x).isdigit() and len(str(x)) >= 4}
     rbx_names = {str(u).lower() for u in identities.get("rbx_usernames", set()) if u}
     discord_ids = {str(x) for x in identities.get("discord_ids", set()) if str(x).isdigit()}
     discord_names = {str(u).lower() for u in identities.get("discord_usernames", set()) if u}
     if not (rbx_ids or rbx_names or discord_ids or discord_names):
-        return {"matches_by_db": {}, "errors": []}
-    if not EXTERNAL_DATABASES:
         return {"matches_by_db": {}, "errors": []}
     tasks = [fetch_external_db(session, cfg, force_refresh) for cfg in EXTERNAL_DATABASES]
     results = await asyncio.gather(*tasks, return_exceptions=True)
@@ -568,12 +1081,12 @@ async def search_external_dbs(session, identities, force_refresh=False):
         payload, err = res
         if payload is None:
             errors.append((cfg["key"], err or "fetch failed")); continue
-        found = search_external_index(payload["index"], rbx_ids, rbx_names, discord_ids, discord_names)
+        found = search_external_index(payload["index"], payload["col_types"],
+                                       rbx_ids, rbx_names, discord_ids, discord_names)
         if found:
             matches_by_db[cfg["key"]] = [
                 {**entry, "cfg": cfg, "col_labels": payload["col_labels"]}
-                for entry in found.values()
-            ]
+                for entry in found.values()]
     return {"matches_by_db": matches_by_db, "errors": errors}
 
 
@@ -625,8 +1138,7 @@ def parse_yes_no(text):
 
 def parse_clanning(text):
     low = (text or "").lower()
-    # Accept "clan:", "clans:", "clanning:", "clanning experience:"
-    m = re.search(r'clan(?:ning)?(?:\s+experience)?\s*[-:]\s*(\w+)', low)
+    m = re.search(r'clans?\s*[-:]\s*(\w+)', low)
     if m:
         v = parse_yes_no(m.group(1))
         if v: return v
@@ -796,7 +1308,19 @@ async def keystone_check(session, ids, force_refresh=False):
 
 # ==================== SIMMER / SNOW CORE ====================
 async def simmer_rab_check(session, rid):
-    if not SIMMER_API_KEY: return {"status": CheckStatus.SKIPPED, "details": "no key"}
+    if not SIMMER_API_KEY or SIMMER_API_KEY.startswith("PASTE"):
+        return {"status": CheckStatus.SKIPPED, "details": "no key"}
+    now = time.time()
+    hit = _simmer_cache.get(rid)
+    if hit and now - hit[1] < SIMMER_TTL:
+        return hit[0]
+    result = await _simmer_fetch(session, rid)
+    if result["status"] in (CheckStatus.PASS, CheckStatus.HIT):
+        _simmer_cache[rid] = (result, time.time())
+    return result
+
+
+async def _simmer_fetch(session, rid):
     try:
         async with session.get(f"{SIMMER_API_URL}/checkuser/rab/{rid}",
                                 headers={"Authorization": f"Bearer {SIMMER_API_KEY}"},
@@ -823,7 +1347,7 @@ async def simmer_rab_check(session, rid):
 
 async def get_snow_core(session, force_refresh=False):
     if not SNOW_CORE_SHEET_ID:
-        return {}, None
+        return {}, None  # no sheet configured — empty dict means "no active bans"
     now = time.time()
     async with bot.snow_core_lock:
         cached, ts = bot.snow_core_cache
@@ -858,8 +1382,6 @@ async def get_snow_core(session, force_refresh=False):
 
 
 async def snow_core_check(session, rid, force_refresh=False):
-    if not SNOW_CORE_SHEET_ID:
-        return {"status": CheckStatus.SKIPPED, "details": "no Snow Core sheet configured"}
     active, err = await get_snow_core(session, force_refresh)
     if active is None: return {"status": CheckStatus.ERROR, "details": f"Snow Core — {err}"}
     if rid in active:
@@ -941,7 +1463,7 @@ def parse_recruitment_message(c):
             v = after(line, "roblox user"); r["roblox_username"] = v.lstrip('@').strip() if v else None
         if "discord user" in low and r["discord_username"] is None:
             v = after(line, "discord user"); r["discord_username"] = v if v else None
-        if "clanning" in low and r["clanning_experience"] is None:
+        if "clanning experience" in low and r["clanning_experience"] is None:
             r["clanning_experience"] = parse_clanning(low)
         if ("x-tracker" in low or "xtracker" in low or "x tracker" in low) and r["xtracker_self"] is None:
             r["xtracker_self"] = parse_yes_no(low)
@@ -975,68 +1497,113 @@ def missing_format_fields(p):
 
 
 # ==================== ROBLOX HTTP ====================
-USER_DOMAINS = ("users.rotunnel.com", "users.roproxy.com", "users.roblox.com")
+USER_DOMAINS  = ("users.rotunnel.com", "users.roproxy.com", "users.roblox.com")
 GROUP_DOMAINS = ("groups.rotunnel.com", "groups.roproxy.com", "groups.roblox.com")
+
 
 async def roblox_user_lookup(session, username):
     u = (username or "").lstrip('@').strip()
     if not u: return None, "not_found"
+    key = u.lower()
+    now = time.time()
+    cached = _roblox_name_to_id.get(key)
+    if cached and now - cached[2] < ROBLOX_LOOKUP_TTL:
+        _record_race_winner(f"lookup:{key}", "(cached)")
+        return {"id": cached[0], "name": cached[1], "displayName": cached[1]}, ""
+
     payload = {"usernames": [u], "excludeBannedUsers": False}
-    errors, c404 = [], False
-    for d in USER_DOMAINS:
+    domains = bot._filter_healthy(USER_DOMAINS)
+
+    async def _try(domain):
         try:
-            async with session.post(f"https://{d}/v1/usernames/users", json=payload) as r:
+            async with session.post(
+                f"https://{domain}/v1/usernames/users", json=payload,
+                timeout=aiohttp.ClientTimeout(total=RACE_TIMEOUT_SEC),
+            ) as r:
                 if r.status == 200:
                     data = await r.json()
-                    if data.get("data"): return data["data"][0], ""
-                    return None, "not_found"
-                if r.status == 404: c404 = True
-                errors.append(f"{d}: {r.status}")
-        except asyncio.TimeoutError: errors.append(f"{d}: timeout")
-        except aiohttp.ClientConnectorError: errors.append(f"{d}: conn")
-        except Exception as e: errors.append(f"{d}: {type(e).__name__}")
-    if c404: return None, "not_found"
-    return None, "lookup_failed: " + " | ".join(errors)
+                    if data.get("data"):
+                        bot._mark_domain_ok(domain)
+                        return data["data"][0], "", domain
+                    return None, "not_found", None
+                if r.status == 404: return None, "not_found", None
+                bot._mark_domain_error(domain)
+                return None, f"{domain}: HTTP {r.status}", None
+        except asyncio.TimeoutError:
+            bot._mark_domain_error(domain); return None, f"{domain}: timeout", None
+        except aiohttp.ClientConnectorError:
+            bot._mark_domain_error(domain); return None, f"{domain}: conn", None
+        except Exception as e:
+            bot._mark_domain_error(domain); return None, f"{domain}: {type(e).__name__}", None
+
+    tasks = [asyncio.create_task(_try(d)) for d in domains]
+    errors = []; nf = 0
+    try:
+        for fut in asyncio.as_completed(tasks):
+            result, err, winner = await fut
+            if result is not None:
+                for t in tasks:
+                    if not t.done(): t.cancel()
+                _roblox_name_to_id[key] = (result["id"], result["name"], time.time())
+                _record_race_winner(f"lookup:{key}", winner or "(unknown)")
+                return result, ""
+            if err == "not_found": nf += 1
+            else: errors.append(err)
+        if nf > 0: return None, "not_found"
+        return None, "lookup_failed: " + " | ".join(errors)
+    finally:
+        for t in tasks:
+            if not t.done(): t.cancel()
 
 
 async def roblox_user_info(session, uid):
-    errors = []
-    for d in USER_DOMAINS:
-        try:
-            async with session.get(f"https://{d}/v1/users/{uid}") as r:
-                if r.status == 200: return await r.json(), ""
-                errors.append(f"{d}: {r.status}")
-        except asyncio.TimeoutError: errors.append(f"{d}: timeout")
-        except aiohttp.ClientConnectorError: errors.append(f"{d}: conn")
-        except Exception as e: errors.append(f"{d}: {type(e).__name__}")
-    return None, " | ".join(errors)
+    now = time.time()
+    hit = _roblox_info_cache.get(uid)
+    if hit and now - hit[1] < ROBLOX_INFO_TTL:
+        _record_race_winner(f"info:{uid}", "(cached)")
+        return hit[0], ""
+    body, err, winner, _ = await _race_200(session, USER_DOMAINS, f"/v1/users/{uid}")
+    if body is not None:
+        _roblox_info_cache[uid] = (body, time.time())
+        _record_race_winner(f"info:{uid}", winner or "(unknown)")
+        return body, ""
+    return None, err or "no response"
 
 
 async def roblox_user_groups(session, uid):
-    errors = []
-    for d in GROUP_DOMAINS:
-        try:
-            async with session.get(f"https://{d}/v1/users/{uid}/groups/roles") as r:
-                if r.status == 200: return (await r.json()).get("data", []), ""
-                errors.append(f"{d}: {r.status}")
-        except asyncio.TimeoutError: errors.append(f"{d}: timeout")
-        except aiohttp.ClientConnectorError: errors.append(f"{d}: conn")
-        except Exception as e: errors.append(f"{d}: {type(e).__name__}")
-    return None, " | ".join(errors)
+    now = time.time()
+    hit = _roblox_groups_cache.get(uid)
+    if hit and now - hit[1] < ROBLOX_GROUPS_TTL:
+        _record_race_winner(f"groups:{uid}", "(cached)")
+        return hit[0], ""
+    body, err, winner, _ = await _race_200(session, GROUP_DOMAINS, f"/v1/users/{uid}/groups/roles")
+    if body is not None:
+        data = body.get("data", []) if isinstance(body, dict) else []
+        _roblox_groups_cache[uid] = (data, time.time())
+        _record_race_winner(f"groups:{uid}", winner or "(unknown)")
+        return data, ""
+    return None, err or "no response"
 
 
 async def roblox_username_history(session, uid):
-    errors = []
-    for d in USER_DOMAINS:
-        try:
-            async with session.get(f"https://{d}/v1/users/{uid}/username-history?limit=50&sortOrder=Desc") as r:
-                if r.status == 200: return (await r.json()).get("data", []), ""
-                if r.status == 404: return [], ""
-                errors.append(f"{d}: {r.status}")
-        except asyncio.TimeoutError: errors.append(f"{d}: timeout")
-        except aiohttp.ClientConnectorError: errors.append(f"{d}: conn")
-        except Exception as e: errors.append(f"{d}: {type(e).__name__}")
-    return None, " | ".join(errors)
+    now = time.time()
+    hit = _roblox_hist_cache.get(uid)
+    if hit and now - hit[1] < ROBLOX_HIST_TTL:
+        _record_race_winner(f"hist:{uid}", "(cached)")
+        return hit[0], ""
+    body, err, winner, got_404 = await _race_200(
+        session, USER_DOMAINS,
+        f"/v1/users/{uid}/username-history?limit=50&sortOrder=Desc")
+    if body is not None:
+        data = body.get("data", []) if isinstance(body, dict) else []
+        _roblox_hist_cache[uid] = (data, time.time())
+        _record_race_winner(f"hist:{uid}", winner or "(unknown)")
+        return data, ""
+    if got_404:
+        _roblox_hist_cache[uid] = ([], time.time())
+        _record_race_winner(f"hist:{uid}", "(404)")
+        return [], ""
+    return None, err or "no response"
 
 
 async def _fetch_gviz(session, gid, sid=None):
@@ -1056,6 +1623,8 @@ async def _fetch_gviz(session, gid, sid=None):
 
 
 async def get_group_blacklist(session, force_refresh=False):
+    if not BLACKLIST_SHEET_ID:
+        return [], None
     now = time.time()
     async with bot.group_blacklist_lock:
         cached, ts = bot.group_blacklist_cache
@@ -1075,6 +1644,8 @@ async def get_group_blacklist(session, force_refresh=False):
 
 
 async def get_user_blacklist(session, force_refresh=False):
+    if not BLACKLIST_SHEET_ID:
+        return [], None
     now = time.time()
     async with bot.user_blacklist_lock:
         cached, ts = bot.user_blacklist_cache
@@ -1122,7 +1693,7 @@ def find_user_blacklist_match(entries, did, rbx_un, past_names=None):
 
 
 async def xtracker_check(session, endpoint, uid):
-    if not XTRACKER_API_KEY:
+    if not XTRACKER_API_KEY or XTRACKER_API_KEY.startswith("PASTE"):
         return {"status": CheckStatus.SKIPPED, "details": "no key"}
     await bot.xtracker_limiter.acquire()
     url = f"https://api.xtracker.xyz/api/{endpoint}?id={uid}"
@@ -1131,11 +1702,17 @@ async def xtracker_check(session, endpoint, uid):
             text = await r.text()
             if r.status == 404:
                 low = text.lower()
-                if "not found" in low or "notfound" in low: return {"status": CheckStatus.PASS, "details": "not in DB"}
+                if "not found" in low or "notfound" in low:
+                    bot.xtracker_limiter.report_ok()
+                    return {"status": CheckStatus.PASS, "details": "not in DB"}
                 return {"status": CheckStatus.SKIPPED, "details": "HTTP 404"}
             if r.status in (401, 403): return {"status": CheckStatus.SKIPPED, "details": f"HTTP {r.status} auth"}
-            if r.status == 429: return {"status": CheckStatus.SKIPPED, "details": "rate limited"}
+            if r.status == 429:
+                bot.xtracker_limiter.report_429()
+                logger.warning(f"Xtracker 429 on {endpoint}/{uid} — limiter now {bot.xtracker_limiter.interval:.2f}s")
+                return {"status": CheckStatus.SKIPPED, "details": "rate limited"}
             if r.status != 200: return {"status": CheckStatus.SKIPPED, "details": f"HTTP {r.status}"}
+            bot.xtracker_limiter.report_ok()
             try: data = json.loads(text)
             except: return {"status": CheckStatus.HIT, "details": text[:300]}
             if data is None or data == "" or data == "null": return {"status": CheckStatus.PASS, "details": "null"}
@@ -1159,7 +1736,8 @@ async def xtracker_check(session, endpoint, uid):
 
 
 async def watcher_check(session, did, key, product):
-    if not key: return {"status": CheckStatus.SKIPPED, "details": "no key"}
+    if not key or key.startswith("PASTE"):
+        return {"status": CheckStatus.SKIPPED, "details": "no key"}
     url = f"https://api.robloxwatcher.com/api/v1/{product}/search/{did}"
     try:
         async with session.get(url, headers={"Authorization": f"Bearer {key}"}) as r:
@@ -1219,6 +1797,25 @@ class ProgressReporter:
 
 
 # ==================== WARM CACHE ====================
+async def _warm_dns():
+    await bot.wait_until_ready()
+    import socket
+    domains = [
+        "users.rotunnel.com", "users.roproxy.com", "users.roblox.com",
+        "groups.rotunnel.com", "groups.roproxy.com", "groups.roblox.com",
+        "api.blox.link", "api.xtracker.xyz", "api.robloxwatcher.com",
+        "api.keystone-swords.com", "api.simmer.icu",
+        "docs.google.com",
+    ]
+    loop = asyncio.get_running_loop()
+    for d in domains:
+        try:
+            await loop.run_in_executor(None, socket.gethostbyname, d)
+        except Exception:
+            pass
+    logger.info("DNS pre-resolve complete")
+
+
 async def _warm_caches():
     await bot.wait_until_ready()
     logger.info("Cache pre-warm starting")
@@ -1247,7 +1844,8 @@ async def _warm_caches():
 
 async def _cache_keep_warm_loop():
     await bot.wait_until_ready()
-    await asyncio.sleep(BLACKLIST_TTL - 30)
+    shortest = min(BLACKLIST_TTL, EXTERNAL_DB_TTL, KEYSTONE_TTL)
+    await asyncio.sleep(shortest - 30)
     while not bot.is_closed():
         try:
             t0 = time.perf_counter()
@@ -1261,9 +1859,49 @@ async def _cache_keep_warm_loop():
                 return_exceptions=True,
             )
             logger.info(f"Cache keep-warm in {int((time.perf_counter()-t0)*1000)}ms")
+            cutoff = (datetime.now(timezone.utc) - timedelta(days=PREEMPTIVE_CLEANUP_DAYS)).isoformat()
+            async with bot.db_lock:
+                await bot.db.execute(
+                    "DELETE FROM preemptive_scans WHERE "
+                    "(identity_scanned_at IS NULL OR identity_scanned_at < ?) AND "
+                    "(xtracker_scanned_at IS NULL OR xtracker_scanned_at < ?) AND "
+                    "(freshness_scanned_at IS NULL OR freshness_scanned_at < ?)",
+                    (cutoff, cutoff, cutoff))
+                await bot.db.commit()
         except Exception:
             logger.warning("Cache keep-warm failed", exc_info=True)
-        await asyncio.sleep(BLACKLIST_TTL - 30)
+        await asyncio.sleep(shortest - 30)
+
+
+async def _keep_connections_warm_loop():
+    await bot.wait_until_ready()
+    endpoints = [
+        ("users.rotunnel.com",  "/v1/users/1"),
+        ("users.roproxy.com",   "/v1/users/1"),
+        ("groups.rotunnel.com", "/v1/users/1/groups/roles"),
+        ("groups.roproxy.com",  "/v1/users/1/groups/roles"),
+    ]
+    while not bot.is_closed():
+        try:
+            await asyncio.gather(
+                *[_health_endpoint(bot.session, d, p) for d, p in endpoints],
+                return_exceptions=True)
+        except Exception:
+            pass
+        await asyncio.sleep(KEEPALIVE_INTERVAL_SEC)
+
+
+# ==================== HEALTH ENDPOINT HELPER ====================
+async def _health_endpoint(session, domain, path):
+    try:
+        async with session.get(
+            f"https://{domain}{path}",
+            timeout=aiohttp.ClientTimeout(total=2.0),
+        ) as r:
+            return {"ok": r.status == 200, "error": None if r.status == 200 else f"HTTP {r.status}"}
+    except asyncio.TimeoutError: return {"ok": False, "error": "timeout"}
+    except aiohttp.ClientConnectorError: return {"ok": False, "error": "conn failed"}
+    except Exception as e: return {"ok": False, "error": type(e).__name__}
 
 
 # ==================== COMPONENTS ====================
@@ -1337,7 +1975,7 @@ async def _rerun_bgc(result, gid):
     async with bot.bgc_semaphore:
         if un and did:
             return await run_bgc_core(un, did, gid, message_id=None, parsed_self_report=None,
-                                       force_blacklist_refresh=True)
+                                       force_blacklist_refresh=True, skip_preemptive=True)
         if un: return await run_bgc_by_username(un, gid, force_blacklist_refresh=True)
         if did: return await run_bgc_by_discord_id(did, gid, force_blacklist_refresh=True)
     return None
@@ -1372,21 +2010,23 @@ class _DebugRerunView(discord.ui.View):
         await i.followup.send(embed=build_result_embed(new, "Re-run (dry)", runner=i.user), ephemeral=True)
 
 
-# ==================== HEALTH ENDPOINT HELPER ====================
-async def _health_endpoint(session, domain, path):
+# ==================== PERSIST ====================
+async def _persist_check_logs(bgc_id, checks):
     try:
-        async with session.get(f"https://{domain}{path}") as r:
-            return {"ok": r.status == 200, "error": None if r.status == 200 else f"HTTP {r.status}"}
-    except asyncio.TimeoutError: return {"ok": False, "error": "timeout"}
-    except aiohttp.ClientConnectorError: return {"ok": False, "error": "conn failed"}
-    except Exception as e: return {"ok": False, "error": type(e).__name__}
+        async with bot.db_lock:
+            await bot.db.executemany(
+                "INSERT INTO check_logs (bgc_id, check_name, status, details) VALUES (?,?,?,?)",
+                [(bgc_id, c["name"], c["status"], c.get("details", "")) for c in checks])
+            await bot.db.commit()
+    except Exception:
+        logger.warning(f"Persist check_logs failed for bgc {bgc_id}", exc_info=True)
 
 
 # ==================== BGC CORE ====================
 async def run_bgc_core(username, discord_id, guild_id, message_id=None,
                        parsed_self_report=None, force_blacklist_refresh=True,
-                       progress=None, member=None, timings=None,
-                       skip_db_history=False):
+                       check_banned=False, progress=None, member=None, timings=None,
+                       skip_db_history=False, skip_preemptive=False):
     async def _adv(idx):
         if progress:
             try: await progress(idx)
@@ -1399,7 +2039,31 @@ async def run_bgc_core(username, discord_id, guild_id, message_id=None,
     session = bot.session
     today = datetime.now(timezone.utc).date()
 
-    # ── TIER 0: fire everything that doesn't need a Roblox ID ──
+    # ── Preemptive lookup ──
+    preemptive = None
+    if discord_id and guild_id and not skip_preemptive:
+        preemptive = await _preemptive_lookup(discord_id, guild_id)
+    have_preemptive_id = bool(
+        preemptive and preemptive.get("blox_id") and preemptive.get("id_fresh"))
+    blox_known_not_linked = bool(
+        preemptive and preemptive.get("id_fresh")
+        and preemptive.get("blox_status") == "not_linked")
+
+    late_cache_hit = None
+    if not (have_preemptive_id or blox_known_not_linked) and discord_id and guild_id:
+        late = _bloxlink_late_cache.get((discord_id, guild_id))
+        if late and time.time() - late[2] < BLOXLINK_LATE_TTL:
+            late_cache_hit = late
+
+    if preemptive:
+        if have_preemptive_id:
+            bot._metrics_preemptive_hits += 1
+        else:
+            bot._metrics_preemptive_misses += 1
+    else:
+        bot._metrics_preemptive_misses += 1
+
+    # ── TIER 0 ──
     t0 = {}
     if discord_id:
         t0["ubl"] = _s(get_user_blacklist(session, force_refresh=force_blacklist_refresh), "user_blacklist")
@@ -1407,22 +2071,47 @@ async def run_bgc_core(username, discord_id, guild_id, message_id=None,
         t0["rw"] = _s(watcher_check(session, discord_id, RW_API_KEY, "robloxwatcher"), "roblox_watcher")
         t0["ew"] = _s(watcher_check(session, discord_id, EW_API_KEY, "exploitwatcher"), "exploit_watcher")
     t0["gbl"] = _s(get_group_blacklist(session, force_refresh=force_blacklist_refresh), "group_blacklist")
-    if BLOXLINK_ENABLED and discord_id and guild_id:
+    if (BLOXLINK_ENABLED and discord_id and guild_id
+            and not (have_preemptive_id or blox_known_not_linked or late_cache_hit)):
         t0["blox"] = _s(bloxlink_discord_to_roblox(session, guild_id, discord_id), "bloxlink")
     if username:
         t0["typed"] = _s(roblox_user_lookup(session, username), "typed_lookup")
+    if member:
+        nickname = (getattr(member, "nick", None) or "").strip().lstrip("@")
+        if (nickname and re.fullmatch(r'[A-Za-z0-9_]{3,20}', nickname)
+                and nickname.lower() != (username or "").lower()):
+            t0["nickname"] = _s(roblox_user_lookup(session, nickname), "nickname_lookup")
 
-    # ── TIER 1: ID-keyed, idempotent. Can fire for as many IDs as we want. ──
+    # ── TIER 1 ──
     t1 = {}
-    def _fire_t1_for(rid):
+    def _fire_t1_for(rid, cached=None):
         if rid is None or f"info_{rid}" in t1: return
-        t1[f"info_{rid}"]         = _s(roblox_user_info(session, rid), f"user_info_{rid}")
-        t1[f"hist_{rid}"]         = _s(roblox_username_history(session, rid), f"username_history_{rid}")
-        t1[f"groups_{rid}"]       = _s(roblox_user_groups(session, rid), f"user_groups_{rid}")
-        t1[f"xtracker_reg_{rid}"] = _s(xtracker_check(session, "registry/user", rid), f"xtracker_reg_{rid}")
-        t1[f"xtracker_own_{rid}"] = _s(xtracker_check(session, "ownership/user", rid), f"xtracker_own_{rid}")
-        t1[f"simmer_rab_{rid}"]   = _s(simmer_rab_check(session, rid), f"simmer_{rid}")
-        t1[f"snow_{rid}"]         = _s(snow_core_check(session, rid, force_refresh=force_blacklist_refresh), f"snow_{rid}")
+        cached = cached or {}
+        if cached.get("info"):
+            t1[f"info_{rid}"] = _resolved(cached["info"], "")
+        else:
+            t1[f"info_{rid}"] = _s(roblox_user_info(session, rid), f"user_info_{rid}")
+        if cached.get("hist") is not None:
+            t1[f"hist_{rid}"] = _resolved(cached["hist"], "")
+        else:
+            t1[f"hist_{rid}"] = _s(roblox_username_history(session, rid), f"username_history_{rid}")
+        if cached.get("groups") is not None:
+            t1[f"groups_{rid}"] = _resolved(cached["groups"], "")
+        else:
+            t1[f"groups_{rid}"] = _s(roblox_user_groups(session, rid), f"user_groups_{rid}")
+        if cached.get("xt_reg"):
+            t1[f"xtracker_reg_{rid}"] = _resolved_direct(cached["xt_reg"])
+        else:
+            t1[f"xtracker_reg_{rid}"] = _s(xtracker_check(session, "registry/user", rid), f"xtracker_reg_{rid}")
+        if cached.get("xt_own"):
+            t1[f"xtracker_own_{rid}"] = _resolved_direct(cached["xt_own"])
+        else:
+            t1[f"xtracker_own_{rid}"] = _s(xtracker_check(session, "ownership/user", rid), f"xtracker_own_{rid}")
+        if cached.get("simmer"):
+            t1[f"simmer_rab_{rid}"] = _resolved_direct(cached["simmer"])
+        else:
+            t1[f"simmer_rab_{rid}"] = _s(simmer_rab_check(session, rid), f"simmer_{rid}")
+        t1[f"snow_{rid}"] = _s(snow_core_check(session, rid, force_refresh=force_blacklist_refresh), f"snow_{rid}")
 
     if parsed_self_report:
         if parsed_self_report.get("willing_to_join") == "no":
@@ -1433,26 +2122,171 @@ async def run_bgc_core(username, discord_id, guild_id, message_id=None,
 
     await _adv(1)
 
-    # ── Fetch DB history early; fire T1 guess for the previous ID ──
+    all_discord_ids = {discord_id} if discord_id else set()
+    dc_names = set()
+    if member:
+        if getattr(member, "name", None): dc_names.add(member.name)
+        if getattr(member, "display_name", None): dc_names.add(member.display_name)
+    if parsed_self_report and parsed_self_report.get("discord_username"):
+        dc_names.add(parsed_self_report["discord_username"])
+
     db_history = []
     if not skip_db_history and discord_id:
         db_history = await get_all_roblox_history(discord_id, guild_id)
         if db_history:
             _fire_t1_for(db_history[0][0])
+        for hid, _ in db_history[1:]:
+            if hid and f"hist_{hid}" not in t1:
+                t1[f"hist_{hid}"] = _s(roblox_username_history(session, hid), f"hist_hist_{hid}")
 
-    # ── Await typed_lookup (fastest). Fire T1 for it immediately. ──
-    typed_user, typed_err = (await t0["typed"]) if "typed" in t0 else (None, "not_found")
-    if typed_user:
-        _fire_t1_for(typed_user["id"])
+    # ── Fire T1 from preemptive cache (primary ID + historical cached IDs) ──
+    if have_preemptive_id:
+        xt_by_id = preemptive.get("xtracker_by_id") or {}
+        primary_rid = preemptive["blox_id"]
+        primary_xt = xt_by_id.get(str(primary_rid), {})
+        _fire_t1_for(primary_rid, cached={
+            "info": preemptive["info"],
+            "hist": preemptive["hist"],
+            "groups": preemptive["groups"],
+            "xt_reg": primary_xt.get("reg"),
+            "xt_own": primary_xt.get("own"),
+            "simmer": preemptive["simmer"],
+        })
+        for rid_str, xt_data in xt_by_id.items():
+            try: rid_int = int(rid_str)
+            except: continue
+            if rid_int == primary_rid: continue
+            _fire_t1_for(rid_int, cached={
+                "xt_reg": xt_data.get("reg"),
+                "xt_own": xt_data.get("own"),
+            })
+        profile["preemptive_hit"] = True
+        profile["bloxlink_status"] = preemptive.get("blox_status") or "preemptive"
+        if preemptive.get("info"):
+            profile["preemptive_name"] = preemptive["info"].get("name")
+        if timings is not None:
+            now_ts = time.perf_counter()
+            timings.append({"name": "preemptive (cached)", "start": now_ts, "end": now_ts})
 
-    # ── NOW await bloxlink (slowest). T1 is already in flight. ──
-    bloxlink_id, bloxlink_status = None, "disabled"
+    # ── Race typed vs nickname ──
+    typed_user, typed_err = (None, "not_found")
+    nick_user = None
+    fired_ids = {preemptive["blox_id"]} if have_preemptive_id else set()
+    identity_pending = []
+    if "typed" in t0: identity_pending.append(("typed", t0["typed"]))
+    if "nickname" in t0: identity_pending.append(("nickname", t0["nickname"]))
+
+    if identity_pending:
+        fut_to_name = {asyncio.ensure_future(t): n for n, t in identity_pending}
+        done, pending_set = await asyncio.wait(fut_to_name.keys(), return_when=asyncio.FIRST_COMPLETED)
+        for fut in done:
+            try: result, err = fut.result()
+            except Exception: result, err = None, "error"
+            name = fut_to_name[fut]
+            if name == "typed": typed_user, typed_err = result, err
+            elif name == "nickname": nick_user = result
+            if result and result["id"] not in fired_ids:
+                _fire_t1_for(result["id"]); fired_ids.add(result["id"])
+        for fut in pending_set:
+            try: result, err = await fut
+            except Exception: result, err = None, "error"
+            name = fut_to_name[fut]
+            if name == "typed":
+                typed_user, typed_err = result, err
+                if result and result["id"] not in fired_ids:
+                    _fire_t1_for(result["id"]); fired_ids.add(result["id"])
+            elif name == "nickname":
+                nick_user = result
+
+    if not typed_user and nick_user:
+        typed_user = nick_user
+        typed_err = "nickname_fallback"
+        profile["resolved_via_nickname"] = nick_user["name"]
+
+    # ── T2 waves ──
+    t2 = {}
+    _multi_fired = set()
+    fast_ids = set()
+    fast_names = set()
+
+    def _fire_t2(ids, names, tag, primary_rid=None):
+        ids = set(ids); names = set(names)
+        if not ids and not names: return
+        ks = {str(x) for x in ids} | {n.lower().lstrip('@') for n in names}
+        if ks:
+            t2[f"keystone_{tag}"] = _s(keystone_check(session, ks, force_refresh=force_blacklist_refresh), f"keystone_{tag}")
+        t2[f"ext_{tag}"] = _s(search_external_dbs(session, {
+            "rbx_ids": ids, "rbx_usernames": names,
+            "discord_ids": all_discord_ids, "discord_usernames": dc_names,
+        }, force_refresh=force_blacklist_refresh), f"external_dbs_{tag}")
+        if primary_rid is not None and primary_rid not in _multi_fired:
+            _multi_fired.add(primary_rid)
+            t2[f"multi_{primary_rid}"] = _s(detect_multi_account(guild_id, discord_id, primary_rid), f"multi_{primary_rid}")
+
+    if have_preemptive_id:
+        fast_ids.add(preemptive["blox_id"])
+        if preemptive.get("info") and preemptive["info"].get("name"):
+            fast_names.add(preemptive["info"]["name"])
+        for h in (preemptive.get("hist") or []):
+            if h.get("name"): fast_names.add(h["name"])
+        _fire_t2(fast_ids, fast_names, "fast", primary_rid=preemptive["blox_id"])
+    elif typed_user:
+        info_t, _ = await t1[f"info_{typed_user['id']}"]
+        hist_t, _ = await t1[f"hist_{typed_user['id']}"]
+        if info_t and info_t.get("name"):
+            fast_ids.add(typed_user["id"])
+            fast_names.add(info_t["name"])
+        for h in (hist_t or []):
+            if h.get("name"): fast_names.add(h["name"])
+        for hid, hname in db_history:
+            if hid: fast_ids.add(hid)
+            if hname: fast_names.add(hname)
+        _fire_t2(fast_ids, fast_names, "fast", primary_rid=typed_user["id"])
+
+    # ── Bloxlink with shield + late cache ──
+    bloxlink_id = None
+    bloxlink_status = "disabled"
     if "blox" in t0:
-        bloxlink_id, bloxlink_status = await t0["blox"]
-    profile["bloxlink_status"] = bloxlink_status
+        blox_task = t0["blox"]
+        try:
+            bloxlink_id, bloxlink_status = await asyncio.wait_for(
+                asyncio.shield(blox_task), timeout=BLOXLINK_HARD_TIMEOUT_MS / 1000.0)
+        except asyncio.TimeoutError:
+            bloxlink_id, bloxlink_status = None, "hard_timeout"
+            bot._metrics_bloxlink_timeouts += 1
+            logger.debug(f"Bloxlink hard timeout — shielding for late cache")
+            def _cache_late(task, did=discord_id, gid=guild_id):
+                if task.cancelled(): return
+                try: rid, status = task.result()
+                except Exception: return
+                if rid and status == "ok":
+                    _store_late_bloxlink(did, gid, rid, status)
+            blox_task.add_done_callback(_cache_late)
+    elif have_preemptive_id:
+        bloxlink_id = preemptive["blox_id"]
+        bloxlink_status = preemptive.get("blox_status") or "preemptive"
+    elif blox_known_not_linked:
+        bloxlink_status = "not_linked"
+    elif late_cache_hit:
+        bloxlink_id = late_cache_hit[0]
+        bloxlink_status = (late_cache_hit[1] or "ok") + "_late"
+        profile["bloxlink_late_cache"] = True
 
-    if bloxlink_id:
+    if bloxlink_id and not have_preemptive_id:
         _fire_t1_for(bloxlink_id)
+
+    blox_delta_names = set()
+    if bloxlink_id and not have_preemptive_id:
+        blox_info, _ = await t1[f"info_{bloxlink_id}"]
+        blox_hist, _ = await t1[f"hist_{bloxlink_id}"]
+        delta_ids = {bloxlink_id} - fast_ids
+        if blox_info and blox_info.get("name") and blox_info["name"] not in fast_names:
+            blox_delta_names.add(blox_info["name"])
+        for h in (blox_hist or []):
+            if h.get("name") and h["name"] not in fast_names:
+                blox_delta_names.add(h["name"])
+        if delta_ids or blox_delta_names:
+            _fire_t2(delta_ids, blox_delta_names, "blox", primary_rid=bloxlink_id)
 
     # ── Resolve identity ──
     pre_info = None
@@ -1464,7 +2298,7 @@ async def run_bgc_core(username, discord_id, guild_id, message_id=None,
             roblox_id = bloxlink_id
             roblox_name = pre_info["name"]
             roblox_display = pre_info.get("displayName", roblox_name)
-            profile["resolved_via"] = "bloxlink"
+            profile["resolved_via"] = "bloxlink_preemptive" if have_preemptive_id else "bloxlink"
             profile["bloxlink_id"] = bloxlink_id
         else:
             bloxlink_id = None
@@ -1479,7 +2313,6 @@ async def run_bgc_core(username, discord_id, guild_id, message_id=None,
         roblox_display = typed_user.get("displayName", roblox_name)
         profile["resolved_via"] = "username"
 
-    # ── Bloxlink ↔ typed quick match check ──
     if bloxlink_id and typed_user and typed_user["id"] != bloxlink_id:
         mm = f"typed `{typed_user['name']}` (`{typed_user['id']}`) ≠ Bloxlink `{roblox_name}` (`{bloxlink_id}`)"
         checks.append({"name": "BloxlinkMismatch", "status": CheckStatus.SKIPPED, "details": mm})
@@ -1541,33 +2374,31 @@ async def run_bgc_core(username, discord_id, guild_id, message_id=None,
     hist_rbx_ids = {hid for hid, _ in db_history if hid and hid != roblox_id}
     hist_rbx_names = {hname for _, hname in db_history if hname and hname.lower() != roblox_name.lower()}
 
+    extra_hist_names = set()
+    for hid in hist_rbx_ids:
+        key = f"hist_{hid}"
+        if key in t1:
+            try:
+                extra_raw, _ = await t1[key]
+                if extra_raw:
+                    for h in extra_raw:
+                        if h.get("name"): extra_hist_names.add(h["name"])
+            except Exception:
+                pass
+
     all_rbx_ids = {roblox_id} | hist_rbx_ids
-    all_rbx_names = {roblox_name} | set(past_names) | hist_rbx_names
+    all_rbx_names = {roblox_name} | set(past_names) | hist_rbx_names | extra_hist_names
     if MISMATCHED_ALT_FAILS and bloxlink_id and typed_user and typed_user["id"] != bloxlink_id:
         all_rbx_ids.add(typed_user["id"])
         all_rbx_names.add(typed_user["name"])
 
-    all_discord_ids = {discord_id} if discord_id else set()
-    dc_names = set()
-    if member:
-        if getattr(member, "name", None): dc_names.add(member.name)
-        if getattr(member, "display_name", None): dc_names.add(member.display_name)
-    if parsed_self_report and parsed_self_report.get("discord_username"):
-        dc_names.add(parsed_self_report["discord_username"])
+    covered_ids = fast_ids | ({bloxlink_id} if bloxlink_id else set())
+    covered_names = fast_names | blox_delta_names
+    remaining_ids = all_rbx_ids - covered_ids
+    remaining_names = all_rbx_names - covered_names
+    if remaining_ids or remaining_names:
+        _fire_t2(remaining_ids, remaining_names, "rem")
 
-    ks_ids = set()
-    for rid in all_rbx_ids: ks_ids.add(str(rid))
-    for un in all_rbx_names: ks_ids.add(un.lower().lstrip('@'))
-
-    # ── TIER 2: everything that needs the full identity set ──
-    t2 = {
-        "keystone": _s(keystone_check(session, ks_ids, force_refresh=force_blacklist_refresh), "keystone"),
-        "ext": _s(search_external_dbs(session, {
-            "rbx_ids": all_rbx_ids, "rbx_usernames": all_rbx_names,
-            "discord_ids": all_discord_ids, "discord_usernames": dc_names,
-        }, force_refresh=force_blacklist_refresh), "external_dbs"),
-        "multi": _s(detect_multi_account(guild_id, discord_id, roblox_id), "multi_account"),
-    }
     for rid in hist_rbx_ids:
         if f"info_{rid}" in t1:
             continue
@@ -1575,9 +2406,7 @@ async def run_bgc_core(username, discord_id, guild_id, message_id=None,
         t2[f"simmer_rab_{rid}"] = _s(simmer_rab_check(session, rid), f"simmer_{rid}_hist")
         t2[f"snow_{rid}"] = _s(snow_core_check(session, rid, force_refresh=force_blacklist_refresh), f"snow_{rid}_hist")
 
-    await _adv(2)
-    await _adv(3)
-    await _adv(4)
+    await _adv(2); await _adv(3); await _adv(4)
 
     async def _await_all(d):
         out = {}
@@ -1591,17 +2420,46 @@ async def run_bgc_core(username, discord_id, guild_id, message_id=None,
     user_bl_entries, ub_err = (await t0["ubl"]) if "ubl" in t0 else (None, "no discord_id")
     group_bl, gbl_err = await t0["gbl"]
 
-    def _safe2(k):
-        r = t2_res.get(k)
-        return r if r is not None else {"status": CheckStatus.SKIPPED, "details": "no result"}
-
     def _check_id(rid, name):
         key = f"{name}_{rid}"
         r = t1_res.get(key)
-        if r is not None: return r
-        r = t2_res.get(key)
-        if r is not None: return r
-        return {"status": CheckStatus.SKIPPED, "details": "no result"}
+        if r is None: r = t2_res.get(key)
+        if r is None:
+            return {"status": CheckStatus.SKIPPED, "details": "no result"}
+        if isinstance(r, dict):
+            return r
+        if isinstance(r, tuple) and len(r) >= 1 and isinstance(r[0], dict):
+            return r[0]
+        return {"status": CheckStatus.SKIPPED, "details": f"unexpected shape: {type(r).__name__}"}
+
+    merged_keystone = {"status": CheckStatus.PASS, "details": ""}
+    for k in list(t2_res):
+        if not k.startswith("keystone_"): continue
+        r = t2_res[k]
+        if r["status"] == CheckStatus.HIT:
+            merged_keystone = r; break
+        elif r["status"] == CheckStatus.ERROR and merged_keystone["status"] == CheckStatus.PASS:
+            merged_keystone = r
+        elif r["status"] == CheckStatus.SKIPPED and merged_keystone["status"] == CheckStatus.PASS:
+            merged_keystone = r
+
+    merged_ext = {"matches_by_db": {}, "errors": []}
+    for k in list(t2_res):
+        if not k.startswith("external_dbs_"): continue
+        r = t2_res[k]
+        if isinstance(r, dict):
+            for dbk, v in r.get("matches_by_db", {}).items():
+                merged_ext["matches_by_db"].setdefault(dbk, []).extend(v)
+            merged_ext["errors"].extend(r.get("errors", []))
+
+    merged_multi = {"name": "MultiAccount", "status": CheckStatus.PASS, "details": "no patterns"}
+    for k in list(t2_res):
+        if not k.startswith("multi_"): continue
+        r = t2_res[k]
+        if r["status"] == CheckStatus.HIT:
+            merged_multi = r; break
+        elif r["status"] == CheckStatus.ERROR and merged_multi["status"] == CheckStatus.PASS:
+            merged_multi = r
 
     if user_bl_entries is None:
         checks.append({"name": "UserBlacklist", "status": CheckStatus.ERROR, "details": ub_err})
@@ -1708,8 +2566,9 @@ async def run_bgc_core(username, discord_id, guild_id, message_id=None,
     else:
         checks.append({"name": "ExploitWatcher", **ew})
 
-    ks = _safe2("keystone"); checks.append({"name": "Keystone", **ks})
-    if ks["status"] == CheckStatus.HIT: passed = False; reason = reason or f"Keystone: {ks['details']}"
+    checks.append({"name": "Keystone", **merged_keystone})
+    if merged_keystone["status"] == CheckStatus.HIT:
+        passed = False; reason = reason or f"Keystone: {merged_keystone['details']}"
 
     groups_result = t1_res.get(f"groups_{roblox_id}")
     if isinstance(groups_result, tuple):
@@ -1730,48 +2589,58 @@ async def run_bgc_core(username, discord_id, guild_id, message_id=None,
     else:
         checks.append({"name": "GroupBlacklist", "status": CheckStatus.SKIPPED, "details": "fetch failed"})
 
-    ext_result = _safe2("ext")
-    if isinstance(ext_result, dict) and "matches_by_db" in ext_result:
-        ext_matches_by_db = ext_result["matches_by_db"]; ext_errors = ext_result["errors"]
-        if ext_errors:
-            profile.setdefault("notes", []).extend(f"⚠️ External DB `{k}` failed: {e}" for k, e in ext_errors)
-        today_local = datetime.now(timezone.utc).date()
-        active_matches_by_db = {}
-        for k, matches in ext_matches_by_db.items():
-            active = []
-            for m in matches:
-                exp = extract_expiry_date(m["record"], m["col_labels"])
-                if exp and exp < today_local: continue
-                if extract_status_inactive(m["record"], m["col_labels"]): continue
-                active.append(m)
-            if active: active_matches_by_db[k] = active
-        if active_matches_by_db:
-            passed = False
-            total = sum(len(v) for v in active_matches_by_db.values())
-            reason = reason or f"Listed in {len(active_matches_by_db)} external database(s) ({total} active)"
-            detail = []
-            for k, matches in active_matches_by_db.items():
-                db_name = next((c["name"] for c in EXTERNAL_DATABASES if c["key"]==k), k)
-                detail.append(f"{db_name}: {len(matches)}")
-            checks.append({"name": "ExternalDBs", "status": CheckStatus.HIT, "details": " · ".join(detail)})
-            profile["external_matches"] = active_matches_by_db
-        else:
-            checks.append({"name": "ExternalDBs",
-                           "status": CheckStatus.PASS if not ext_errors else CheckStatus.SKIPPED,
-                           "details": (f"{len(EXTERNAL_DATABASES)} DBs searched" if not ext_errors
-                                       else f"{len(ext_errors)} error(s)")})
+    ext_errors = merged_ext["errors"]
+    if ext_errors:
+        profile.setdefault("notes", []).extend(f"⚠️ External DB `{k}` failed: {e}" for k, e in ext_errors)
+    today_local = datetime.now(timezone.utc).date()
+    active_matches_by_db = {}
+    for k, matches in merged_ext["matches_by_db"].items():
+        active = []
+        for m in matches:
+            exp = extract_expiry_date(m["record"], m["col_labels"])
+            if exp and exp < today_local: continue
+            if extract_status_inactive(m["record"], m["col_labels"]): continue
+            active.append(m)
+        if active: active_matches_by_db[k] = active
+    if active_matches_by_db:
+        passed = False
+        total = sum(len(v) for v in active_matches_by_db.values())
+        reason = reason or f"Listed in {len(active_matches_by_db)} external database(s) ({total} active)"
+        detail = []
+        for k, matches in active_matches_by_db.items():
+            db_name = next((c["name"] for c in EXTERNAL_DATABASES if c["key"]==k), k)
+            detail.append(f"{db_name}: {len(matches)}")
+        checks.append({"name": "ExternalDBs", "status": CheckStatus.HIT, "details": " · ".join(detail)})
+        profile["external_matches"] = active_matches_by_db
+    else:
+        checks.append({"name": "ExternalDBs",
+                       "status": CheckStatus.PASS if not ext_errors else CheckStatus.SKIPPED,
+                       "details": (f"{len(EXTERNAL_DATABASES)} DBs searched" if not ext_errors
+                                   else f"{len(ext_errors)} error(s)")})
 
-    ma = _safe2("multi")
-    if "name" in ma:
-        checks.append({"name": ma["name"], "status": ma["status"], "details": ma["details"]})
-        if ma["status"] == CheckStatus.HIT:
-            passed = False; reason = reason or f"Multi-account: {ma['details']}"
+    if "name" in merged_multi:
+        checks.append({"name": merged_multi["name"],
+                       "status": merged_multi["status"], "details": merged_multi["details"]})
+        if merged_multi["status"] == CheckStatus.HIT:
+            passed = False; reason = reason or f"Multi-account: {merged_multi['details']}"
 
     if discord_id:
         profile["discord_id"] = discord_id
         profile["discord_username"] = f"<@{discord_id}>"
 
+    race_summary = []
+    for rid in all_rbx_ids:
+        suffix = "" if rid == roblox_id else " (hist)"
+        for key, (domain, _) in list(_race_winners.items()):
+            parts = key.split(":")
+            if len(parts) >= 2 and parts[1] == str(rid):
+                race_summary.append(f"{parts[0]}{suffix} → {domain}")
+    if race_summary:
+        checks.append({"name": "RaceWinners", "status": CheckStatus.PASS,
+                       "details": " · ".join(race_summary[:6])})
+
     await _adv(5)
+
     bgc_id = None
     if message_id is not None:
         async with bot.db_lock:
@@ -1796,10 +2665,9 @@ async def run_bgc_core(username, discord_id, guild_id, message_id=None,
                      profile.get("roblox_username"), int(passed), reason or "PASS",
                      json.dumps(checks), BOT_VERSION, CHECKS_VERSION))
                 bgc_id = cursor.lastrowid
-            for c in checks:
-                await bot.db.execute("INSERT INTO check_logs (bgc_id, check_name, status, details) VALUES (?,?,?,?)",
-                                     (bgc_id, c["name"], c["status"], c.get("details","")))
             await bot.db.commit()
+        if checks and bgc_id:
+            asyncio.create_task(_persist_check_logs(bgc_id, checks))
 
     return {"passed": passed, "reason": reason or "PASS", "checks": checks,
             "profile": profile, "parse_failed": False, "bgc_id": bgc_id}
@@ -1820,19 +2688,22 @@ async def run_bgc(message, guild_id, force_blacklist_refresh=True, progress=None
                                progress=progress, member=member)
 
 
-async def run_bgc_by_username(username, guild_id, force_blacklist_refresh=True):
+async def run_bgc_by_username(username, guild_id, force_blacklist_refresh=True, check_banned=True,
+                                skip_preemptive=False):
     return await run_bgc_core(username, None, guild_id, message_id=None,
                                parsed_self_report=None, force_blacklist_refresh=force_blacklist_refresh,
-                               member=None)
+                               check_banned=check_banned, member=None,
+                               skip_preemptive=skip_preemptive)
 
 
-async def run_bgc_by_discord_id(discord_id, guild_id, force_blacklist_refresh=True):
+async def run_bgc_by_discord_id(discord_id, guild_id, force_blacklist_refresh=True,
+                                 skip_preemptive=False):
     session = bot.session
     member = None
     if guild_id:
         g = bot.get_guild(guild_id)
         if g: member = g.get_member(discord_id)
-    if BLOXLINK_ENABLED and guild_id:
+    if BLOXLINK_ENABLED and guild_id and BLOXLINK_API_KEY and not BLOXLINK_API_KEY.startswith("PASTE"):
         bl_id, _ = await bloxlink_discord_to_roblox(session, guild_id, discord_id)
         if bl_id:
             info, _ = await roblox_user_info(session, bl_id)
@@ -1840,7 +2711,7 @@ async def run_bgc_by_discord_id(discord_id, guild_id, force_blacklist_refresh=Tr
                 return await run_bgc_core(info["name"], discord_id, guild_id, message_id=None,
                                           parsed_self_report=None,
                                           force_blacklist_refresh=force_blacklist_refresh,
-                                          member=member)
+                                          member=member, skip_preemptive=skip_preemptive)
     history = await get_all_roblox_history(discord_id, guild_id)
     if not history:
         return await _run_bgc_discord_only(discord_id, guild_id, force_blacklist_refresh, member=member)
@@ -1854,7 +2725,7 @@ async def run_bgc_by_discord_id(discord_id, guild_id, force_blacklist_refresh=Tr
                                             extra_checks=extra, member=member)
     result = await run_bgc_core(resolved, discord_id, guild_id, message_id=None,
                                  parsed_self_report=None, force_blacklist_refresh=force_blacklist_refresh,
-                                 member=member)
+                                 member=member, skip_preemptive=skip_preemptive)
     result["profile"]["discord_only"] = False
     if len(history) > 1: result["profile"]["historical_identities"] = history
     return result
@@ -1956,10 +2827,18 @@ def build_result_embed(result, title_prefix="BGC Result", runner=None):
         embed.add_field(name="Scope", value="Discord-ID only", inline=True)
 
     via = p.get("resolved_via"); bl_st = p.get("bloxlink_status")
-    if via == "bloxlink":
+    if via == "bloxlink_preemptive":
+        embed.add_field(name="🔗 Identity", value="**Bloxlink** (preemptive cache)", inline=True)
+    elif via == "bloxlink":
         embed.add_field(name="🔗 Identity", value="**Bloxlink**", inline=True)
     elif via == "username":
         embed.add_field(name="🔗 Identity", value=f"Typed username (Bloxlink: `{bl_st or 'n/a'}`)", inline=True)
+    if p.get("resolved_via_nickname"):
+        embed.add_field(name="🏷️ Nickname fallback", value=f"`{p['resolved_via_nickname']}`", inline=True)
+    if p.get("preemptive_hit"):
+        embed.add_field(name="🏎️ Preemptive", value="Cached identity + xtracker", inline=True)
+    if p.get("bloxlink_late_cache"):
+        embed.add_field(name="⏱️ Bloxlink late cache", value="From previous timeout", inline=True)
 
     hits = [c for c in result["checks"] if c["status"] == CheckStatus.HIT]
     errors = [c for c in result["checks"] if c["status"] == CheckStatus.ERROR]
@@ -1982,6 +2861,10 @@ def build_result_embed(result, title_prefix="BGC Result", runner=None):
         prev = ", ".join(f"`{n}`" for n in names[:6])
         if len(names) > 6: prev += f" *+{len(names)-6}*"
         embed.add_field(name=f"Past names ({len(names)})", value=prev[:1024], inline=False)
+
+    race_check = next((c for c in result["checks"] if c["name"] == "RaceWinners"), None)
+    if race_check:
+        embed.add_field(name="🏁 Race Winners", value=race_check["details"][:1024], inline=False)
 
     ext = p.get("external_matches") or {}
     for db_key, matches in ext.items():
@@ -2011,7 +2894,7 @@ def build_result_embed(result, title_prefix="BGC Result", runner=None):
 
     notes = p.get("notes") or []
     if notes: embed.add_field(name=f"📝 Notes ({len(notes)})", value="\n".join(notes)[:1024], inline=False)
-    embed.set_footer(text=f"v{BOT_VERSION} · checks v{CHECKS_VERSION} · BGC #{result.get('bgc_id') or '—'}")
+    embed.set_footer(text=f"v{BOT_VERSION} · checks v{CHECKS_VERSION} · BGC #{result.get('bgc_id') or '—'} · made by {BOT_AUTHOR}")
     return embed
 
 
@@ -2101,7 +2984,6 @@ async def _send_acceptance_dm(user, guild):
     except Exception as e: return {"sent": False, "reason": type(e).__name__}
 
 
-# ==================== POST-PASS ACTIONS ====================
 async def _post_pass_actions(message, result, from_edit, silent, runner, duration_ms):
     autorole_result = None; dm_result = None
     if message.guild is not None:
@@ -2125,8 +3007,17 @@ async def _safe_post_pass(message, result, from_edit, silent, runner, duration_m
 
 
 # ==================== PROCESS ====================
+async def _delayed_reaction(msg, emoji, delay):
+    try:
+        await asyncio.sleep(delay)
+        await msg.add_reaction(emoji)
+    except (asyncio.CancelledError, discord.HTTPException):
+        pass
+
+
 async def process_message(message, gid, dry_run=False, from_edit=False,
-                          force_blacklist_refresh=True, silent=False, show_progress=True, runner=None):
+                          force_blacklist_refresh=True, silent=False, show_progress=True, runner=None,
+                          skip_preemptive=False):
     if is_format_template(message.content):
         return {"passed": None, "reason": "template", "checks": [], "profile": {}, "skipped_template": True}
     if not dry_run and not from_edit and await is_already_checked(message.id):
@@ -2151,9 +3042,9 @@ async def process_message(message, gid, dry_run=False, from_edit=False,
             asyncio.create_task(log_bgc_to_bot_logs(gid, message, result, 0))
         return result
 
+    reaction_task = None
     if not dry_run:
-        try: await message.add_reaction("⏰")
-        except: pass
+        reaction_task = asyncio.create_task(_delayed_reaction(message, "⏰", DLY_REACTION_SEC))
 
     reporter = None
     async with bot.bgc_semaphore:
@@ -2164,8 +3055,16 @@ async def process_message(message, gid, dry_run=False, from_edit=False,
             bot._active_progress_per_channel[message.channel.id] += 1
         start = time.time(); duration_ms = 0
         try:
-            result = await run_bgc(message, gid, force_blacklist_refresh,
-                                    progress=reporter.advance if reporter else None)
+            if skip_preemptive:
+                result = await run_bgc_core(parsed["roblox_username"], message.author.id, gid,
+                                             message_id=message.id, parsed_self_report=parsed,
+                                             force_blacklist_refresh=force_blacklist_refresh,
+                                             progress=reporter.advance if reporter else None,
+                                             member=message.author if isinstance(message.author, discord.Member) else None,
+                                             skip_preemptive=True)
+            else:
+                result = await run_bgc(message, gid, force_blacklist_refresh,
+                                        progress=reporter.advance if reporter else None)
         except Exception as e:
             tb = traceback.format_exc(); logger.error(f"BGC error: {e}\n{tb}")
             result = {"passed": False, "reason": "Verification temporarily unavailable, please try again shortly",
@@ -2193,6 +3092,11 @@ async def process_message(message, gid, dry_run=False, from_edit=False,
 
     if dry_run: return result
 
+    if reaction_task is not None:
+        if not reaction_task.done():
+            reaction_task.cancel()
+            try: await reaction_task
+            except: pass
     asyncio.create_task(message.remove_reaction("⏰", bot.user))
     asyncio.create_task(message.add_reaction("✅" if result["passed"] else "❌"))
 
@@ -2219,12 +3123,12 @@ async def on_ready():
     bot._online_logged = True
     rows = await db_fetchall("SELECT guild_id FROM guild_settings WHERE bot_log_channel IS NOT NULL")
     autorole_text = f"<@&{AUTO_ROLE_ID}>" if AUTO_ROLE_ID else "not configured"
+    brand_header = f"**{BRAND_NAME}**\n" if BRAND_NAME else ""
     for (gid,) in rows:
         embed = discord.Embed(title=branded("🟢 Bot Online"),
-                              description=(f"**{BRAND_NAME or 'BGC Bot'}**\n{bot.user.mention}\n"
-                                           f"Latency: `{round(bot.latency*1000)}ms`\nGuilds: `{len(bot.guilds)}`\n"
-                                           f"Version: `{BOT_VERSION}`\nAutorole: {autorole_text}"),
+                              description=f"{brand_header}{bot.user.mention}\nLatency: `{round(bot.latency*1000)}ms`\nGuilds: `{len(bot.guilds)}`\nVersion: `{BOT_VERSION}`\nAutorole: {autorole_text}",
                               color=T.SUCCESS, timestamp=datetime.now(timezone.utc))
+        embed.set_footer(text=f"made by {BOT_AUTHOR}")
         await bot_log(gid, embed=embed)
 
 
@@ -2234,7 +3138,7 @@ async def on_message(message):
     if message.content.startswith(("/", "!", ".")): return
     if is_privileged_member(message.author): return
     rc = await get_recruitment_channel(message.guild.id)
-    if rc is None or message.channel.id != rc: return
+    if not rc or message.channel.id != rc: return
     if is_format_template(message.content): return
     asyncio.create_task(process_message(message, message.guild.id, force_blacklist_refresh=False))
 
@@ -2243,7 +3147,7 @@ async def on_message(message):
 async def on_raw_message_edit(payload):
     if not payload.guild_id or "content" not in payload.data: return
     rc = await get_recruitment_channel(payload.guild_id)
-    if rc is None or payload.channel_id != rc: return
+    if not rc or payload.channel_id != rc: return
     mid = payload.message_id
     existing = _pending_edits.get(mid)
     if existing and not existing.done(): existing.cancel()
@@ -2287,7 +3191,7 @@ async def on_app_command_error(interaction, error):
 
 
 def authorized(interaction):
-    if OWNER_ID is not None and interaction.user.id == OWNER_ID: return True
+    if OWNER_ID and interaction.user.id == OWNER_ID: return True
     if interaction.guild and interaction.user.guild_permissions.administrator: return True
     return False
 
@@ -2332,13 +3236,88 @@ async def debug_latest_ac(interaction, current):
     return out[:25]
 
 
+# ==================== TIMELINE FORMATTER ====================
+def _format_timeline(timings, t_start, total, result, header_lines):
+    def _start_ms(t): return (t["start"] - t_start) * 1000.0
+    def _end_ms(t):   return (t["end"]   - t_start) * 1000.0
+    def _dur_ms(t):   return (t["end"]   - t["start"]) * 1000.0
+
+    def _tier(name):
+        if name in ("user_blacklist","discord_age","roblox_watcher","exploit_watcher",
+                    "group_blacklist","bloxlink","typed_lookup","nickname_lookup"):
+            return 0
+        if (name.startswith("keystone") or name.startswith("external_dbs")
+                or name.startswith("multi_") or name.endswith("_hist")):
+            return 2
+        return 1
+
+    t0_tasks = [t for t in timings if _tier(t["name"]) == 0]
+    t1_tasks = [t for t in timings if _tier(t["name"]) == 1]
+    t2_tasks = [t for t in timings if _tier(t["name"]) == 2]
+
+    t1_start_times = [_start_ms(t) for t in t1_tasks]
+    t1_fire = min(t1_start_times) if t1_start_times else 0.0
+
+    info_task = next((t for t in timings if t["name"].startswith("user_info")), None)
+    hist_task = next((t for t in timings if t["name"].startswith("username_history")), None)
+    info_done = _end_ms(info_task) if info_task else 0.0
+    hist_done = _end_ms(hist_task) if hist_task else 0.0
+
+    t0_gate = max(t0_tasks, key=_end_ms, default=None)
+    longest = max(timings, key=_dur_ms, default=None) if timings else None
+    xtracker_tasks = [t for t in timings if t["name"].startswith("xtracker")]
+    xtracker_serial = sum(_dur_ms(t) for t in xtracker_tasks)
+
+    waves = {"fast": [], "blox": [], "rem": [], "other": []}
+    for t in t2_tasks:
+        matched = False
+        for w in ("fast", "blox", "rem"):
+            if t["name"].endswith(f"_{w}") or t["name"].endswith(f"_{w}_hist"):
+                waves[w].append(t); matched = True; break
+        if not matched: waves["other"].append(t)
+
+    lines = list(header_lines)
+    lines.append(f"Result:   {'PASS' if result['passed'] else 'FAIL'} — {result['reason']}")
+    lines.append(f"Total:    {total:.0f}ms")
+    lines.append("")
+    lines.append("─ Task Timeline (chronological) ─")
+    lines.append("```")
+    lines.append(f"{'START':>10} {'END':>10} {'DUR':>10}  NAME")
+    for t in sorted(timings, key=lambda x: x["start"]):
+        lines.append(f"{_start_ms(t):>8.1f}ms {_end_ms(t):>8.1f}ms {_dur_ms(t):>8.1f}ms  {t['name']}")
+    lines.append("```")
+    lines.append("")
+    lines.append("─ Gates / Bottlenecks ─")
+    lines.append(f"• T0 → T1 fire:     T={t1_fire:.0f}ms (first ID known)")
+    if t0_gate:
+        lines.append(f"  - T0 slowest:     {t0_gate['name']} finished T={_end_ms(t0_gate):.0f}ms ({_dur_ms(t0_gate):.0f}ms)")
+    if info_task:
+        lines.append(f"• Identity finalized (info):  T={info_done:.0f}ms ({_dur_ms(info_task):.0f}ms)")
+    if hist_task:
+        lines.append(f"• T1 → T2 fire (hist done):   T={hist_done:.0f}ms ({_dur_ms(hist_task):.0f}ms)")
+    if longest:
+        lines.append(f"• Longest task:     {longest['name']} — {_dur_ms(longest):.0f}ms")
+    if xtracker_tasks:
+        lines.append(f"• Xtracker total:   {len(xtracker_tasks)} call(s) × {bot.xtracker_limiter.interval:.2f}s limiter = {xtracker_serial:.0f}ms")
+    lines.append("")
+    lines.append("─ T2 Waves ─")
+    for w in ("fast", "blox", "rem", "other"):
+        ts = waves[w]
+        if not ts: continue
+        w_start = min(_start_ms(t) for t in ts)
+        w_end = max(_end_ms(t) for t in ts)
+        lines.append(f"  {w:>5}:  T={w_start:.0f}ms → T={w_end:.0f}ms  ({len(ts)} task(s), span {w_end-w_start:.0f}ms)")
+        for t in sorted(ts, key=lambda x: x["start"]):
+            lines.append(f"           {t['name']:<32}  {_dur_ms(t):>6.0f}ms")
+    lines.append("")
+    return "\n".join(lines)
+
+
 # ==================== /about ====================
 @tree.command(name="about", description="Simple guide: what the bot checks and why you might have failed")
 async def about_cmd(interaction):
     await interaction.response.defer(ephemeral=True)
     pages = []
-
-    n_ext = len(EXTERNAL_DATABASES)
 
     p1 = discord.Embed(title=branded("🔎 What We Check"), color=T.BRAND,
                        description=("When you post your application, the bot searches **all of these at the same time.**\n"
@@ -2350,10 +3329,9 @@ async def about_cmd(interaction):
     p1.add_field(name="💬  **Your Discord Account**", value="How old your Discord account is", inline=False)
     p1.add_field(name="📋  **Our Blacklist**", value="Our own list of banned users and banned Roblox groups", inline=False)
     p1.add_field(name="🛡️  **Cheater Databases**", value="**Xtracker** and **Keystone** — shared lists used by many clans", inline=False)
+    n_ext = len(EXTERNAL_DATABASES)
     if n_ext:
-        p1.add_field(name=f"🗄️  **{n_ext} External Blacklists**",
-                     value=f"Ban lists from **{n_ext} external source{'s' if n_ext != 1 else ''}** we check for your name",
-                     inline=False)
+        p1.add_field(name=f"🗄️  **{n_ext} External Blacklists**", value=f"Ban lists from **{n_ext} other source{'s' if n_ext != 1 else ''}** we check for your name", inline=False)
     p1.add_field(name="👁️  **Roblox Watcher**", value="Checks if you've ever been in an **NSFW** or **condo** Discord server", inline=False)
     p1.add_field(name="🕵️  **Simmer**", value="Checks for suspicious **Roblox Studio** activity", inline=False)
     p1.add_field(name="❄️  **Snow Core**", value="Another community's punishment list", inline=False)
@@ -2373,7 +3351,8 @@ async def about_cmd(interaction):
     p2.add_field(name="❌  **Discord account too new**", value="Must be at least **7 days old**", inline=False)
     p2.add_field(name="❌  **In a banned Roblox group**", value="You're in a group that's on our blacklist", inline=False)
     p2.add_field(name="❌  **On our blacklist**", value="You're on our own ban list **and haven't appealed it**", inline=False)
-    p2.add_field(name="❌  **Another clan banned you**", value="You're on **one of the external lists** we check", inline=False)
+    if n_ext:
+        p2.add_field(name="❌  **Another clan banned you**", value=f"You're on **one of the {n_ext} external lists** we check", inline=False)
     p2.add_field(name="❌  **Known cheater**", value="You're in **Xtracker** or **Keystone**", inline=False)
     p2.add_field(name="❌  **Seen in bad servers**", value="You were in an **NSFW** or **condo** Discord server", inline=False)
     p2.add_field(name="❌  **Username doesn't exist**", value="The Roblox username you typed is **not a real account** (typo?)", inline=False)
@@ -2402,34 +3381,6 @@ def _private_ow(g):
         om = g.get_member(OWNER_ID)
         if om: ow[om] = discord.PermissionOverwrite(view_channel=True, send_messages=True, read_message_history=True)
     return ow
-
-
-class SetupSelectView(discord.ui.View):
-    def __init__(self, guild):
-        super().__init__(timeout=300); self.guild = guild
-    async def _pick(self, interaction, slot):
-        chans = [c for c in self.guild.text_channels if c.permissions_for(self.guild.me).send_messages]
-        if not chans:
-            await interaction.response.send_message(branded("No usable channels."), ephemeral=True); return
-        opts = [discord.SelectOption(label=c.name, value=str(c.id)) for c in chans[:25]]
-        class Pick(discord.ui.Select):
-            def __init__(self): super().__init__(placeholder=f"Choose {slot} channel", options=opts)
-            async def callback(self, i):
-                p, f, b = await get_log_channels(self.guild.id)
-                target = int(self.values[0])
-                if slot == "pass": p = target
-                elif slot == "fail": f = target
-                else: b = target
-                await set_log_channels(self.guild.id, p, f, b)
-                await i.response.send_message(branded(f"{slot} → <#{target}>"), ephemeral=True)
-        v = discord.ui.View(); v.add_item(Pick())
-        await interaction.response.send_message(branded(f"Select {slot}:"), view=v, ephemeral=True)
-    @discord.ui.button(label="Pass log", style=discord.ButtonStyle.green)
-    async def b_pass(self, i, b): await self._pick(i, "pass")
-    @discord.ui.button(label="Fail log", style=discord.ButtonStyle.red)
-    async def b_fail(self, i, b): await self._pick(i, "fail")
-    @discord.ui.button(label="Bot log", style=discord.ButtonStyle.blurple)
-    async def b_bot(self, i, b): await self._pick(i, "bot")
 
 
 @tree.command(name="setup", description="Create or reconfigure the BGC log channels for this server")
@@ -2470,7 +3421,7 @@ async def setup_cmd(interaction, pass_log: Optional[discord.TextChannel]=None,
         except Exception as e:
             await interaction.followup.send(branded(f"Channel creation failed: {e}"), ephemeral=True); return
         await set_log_channels(guild.id, p_ch.id, f_ch.id, b_ch.id)
-        autorole_text = f"<@&{AUTO_ROLE_ID}>" if AUTO_ROLE_ID else "(not configured — set AUTO_ROLE_ID env var)"
+        autorole_text = f"<@&{AUTO_ROLE_ID}>" if AUTO_ROLE_ID else "not configured"
         await interaction.followup.send(branded(f"Setup complete.\nPass: {p_ch.mention}\nFail: {f_ch.mention}\nBot: {b_ch.mention}\nAutorole: {autorole_text}"), ephemeral=True)
 
 
@@ -2616,7 +3567,7 @@ async def _lookup_single(interaction, target):
     if mention is not None:
         discord_id = mention
         bl_id, bl_status = (None, "disabled")
-        if BLOXLINK_ENABLED and interaction.guild_id:
+        if BLOXLINK_ENABLED and interaction.guild_id and BLOXLINK_API_KEY and not BLOXLINK_API_KEY.startswith("PASTE"):
             bl_id, bl_status = await bloxlink_discord_to_roblox(bot.session, interaction.guild_id, discord_id)
         if bl_id:
             info, _ = await roblox_user_info(bot.session, bl_id)
@@ -2770,24 +3721,26 @@ async def check_cmd(interaction, target: str, dry_run: bool=False):
     dt = parse_discord_target(target)
     if dt is not None:
         async with bot.bgc_semaphore:
-            result = await run_bgc_by_discord_id(dt, interaction.guild_id or 0, force_blacklist_refresh=True)
+            result = await run_bgc_by_discord_id(dt, interaction.guild_id or 0,
+                                                  force_blacklist_refresh=True, skip_preemptive=True)
         e = build_result_embed(result, f"Check · <@{dt}>", runner=interaction.user)
         if dry_run: e.title = branded(f"[Dry Run] {e.title}")
         await interaction.followup.send(embed=e, view=BGCResultView(result, interaction.guild_id or 0, interaction.user.id), ephemeral=True); return
     m = re.search(r'channels/(\d+)/(\d+)/(\d+)', target)
     if m:
         gid, cid, mid = int(m.group(1)), int(m.group(2)), int(m.group(3))
-        if OWNER_ID is None or interaction.user.id != OWNER_ID:
+        if not (OWNER_ID and interaction.user.id == OWNER_ID):
             rc = await get_recruitment_channel(gid)
-            if rc is None or cid != rc:
-                await interaction.followup.send(branded(f"Non-owners: only <#{rc}>."), ephemeral=True); return
+            if not rc or cid != rc:
+                await interaction.followup.send(branded(f"Non-owners: only <#{rc}>." if rc else "No recruitment channel configured."), ephemeral=True); return
         try:
             ch = bot.get_channel(cid) or await bot.fetch_channel(cid)
             msg = await ch.fetch_message(mid)
         except Exception as e:
             await interaction.followup.send(branded(f"Could not fetch message: {e}"), ephemeral=True); return
         result = await process_message(msg, gid, dry_run=dry_run, force_blacklist_refresh=True,
-                                        show_progress=not dry_run, runner=interaction.user)
+                                        show_progress=not dry_run, runner=interaction.user,
+                                        skip_preemptive=True)
         if result.get("skipped_template"):
             await interaction.followup.send(branded("Format template, not an application."), ephemeral=True); return
         if result.get("skipped_dup"):
@@ -2796,7 +3749,8 @@ async def check_cmd(interaction, target: str, dry_run: bool=False):
         if dry_run: e.title = branded(f"[Dry Run] {e.title}")
         await interaction.followup.send(embed=e, view=BGCResultView(result, gid, interaction.user.id), ephemeral=True); return
     async with bot.bgc_semaphore:
-        result = await run_bgc_by_username(target, interaction.guild_id or 0, force_blacklist_refresh=True)
+        result = await run_bgc_by_username(target, interaction.guild_id or 0, force_blacklist_refresh=True,
+                                            check_banned=True, skip_preemptive=True)
     e = build_result_embed(result, f"Check · `{target}`", runner=interaction.user)
     if dry_run: e.title = branded(f"[Dry Run] {e.title}")
     await interaction.followup.send(embed=e, view=BGCResultView(result, interaction.guild_id or 0, interaction.user.id), ephemeral=True)
@@ -2819,7 +3773,7 @@ async def backfill_cmd(interaction, limit: int=100, recheck: bool=False, skip_ch
     await interaction.response.defer(ephemeral=True)
     status = await interaction.followup.send(branded(f"⏳ Backfilling… `0 / {limit}`"), ephemeral=True)
     rc = await get_recruitment_channel(guild.id)
-    if rc is None:
+    if not rc:
         await status.edit(content=branded("❌ No recruitment channel configured. Run `/setup`.")); return
     try: ch = bot.get_channel(rc) or await bot.fetch_channel(rc)
     except Exception as e:
@@ -2859,7 +3813,7 @@ async def backfill_cmd(interaction, limit: int=100, recheck: bool=False, skip_ch
 @tree.command(name="reset", description="Owner only — wipe guild settings (roles never removed)")
 @app_commands.describe(confirm="Direct confirmation", clear_history="Also delete BGC history")
 async def reset_cmd(interaction, confirm: bool=False, clear_history: bool=False):
-    if OWNER_ID is None or interaction.user.id != OWNER_ID:
+    if not OWNER_ID or interaction.user.id != OWNER_ID:
         await interaction.response.send_message(branded("Owner only."), ephemeral=True); return
     guild = interaction.guild
     if not guild:
@@ -2898,7 +3852,7 @@ async def reset_cmd(interaction, confirm: bool=False, clear_history: bool=False)
     except: pass
 
 
-# ==================== /health ====================
+# ==================== /health (group) ====================
 health_group = app_commands.Group(name="health", description="Health checks, cache management, and diagnostics")
 
 
@@ -2911,7 +3865,7 @@ async def health_check(interaction, test_users: Optional[str]=None, test_dm: boo
     await interaction.response.defer(ephemeral=True)
 
     groups = {"📋 Blacklists": [], "🌐 Roblox API": [], "🕵️ Watchlists": [],
-              "🎭 Autorole & DM": [], "🗄️ External DBs": [], "💾 System": []}
+              "🎭 Autorole & DM": [], "🗄️ External DBs": [], "🧠 Preemptive": [], "💾 System": []}
     bot._reset_caches()
     t0 = time.perf_counter()
     gbl, gbl_e = await get_group_blacklist(bot.session, force_refresh=True)
@@ -2947,7 +3901,7 @@ async def health_check(interaction, test_users: Optional[str]=None, test_dm: boo
     else:
         groups["🕵️ Watchlists"].append("⚪ Watchers — not configured")
     groups["🕵️ Watchlists"].append(f"{'🟢' if EXPLOIT_WATCHER_INFORMATIONAL else '🔴'} Exploit Watcher — {'informational' if EXPLOIT_WATCHER_INFORMATIONAL else 'blocks'}")
-    if BLOXLINK_ENABLED and BLOXLINK_API_KEY:
+    if BLOXLINK_ENABLED and BLOXLINK_API_KEY and not BLOXLINK_API_KEY.startswith("PASTE"):
         if interaction.guild:
             _, st = await bloxlink_discord_to_roblox(bot.session, interaction.guild.id, interaction.user.id)
             if st in ("ok", "not_linked"): groups["🕵️ Watchlists"].append(f"🟢 Bloxlink — reachable ({st})")
@@ -2955,7 +3909,7 @@ async def health_check(interaction, test_users: Optional[str]=None, test_dm: boo
             elif st == "invalid_key": groups["🕵️ Watchlists"].append("🔴 Bloxlink — invalid key")
             else: groups["🕵️ Watchlists"].append(f"🔴 Bloxlink — {st[:60]}")
         else: groups["🕵️ Watchlists"].append("⚪ Bloxlink — guild required")
-    else: groups["🕵️ Watchlists"].append("⚪ Bloxlink — not configured")
+    else: groups["🕵️ Watchlists"].append("⚪ Bloxlink — disabled")
     if AUTO_ROLE_ID and interaction.guild:
         role = interaction.guild.get_role(AUTO_ROLE_ID); me = interaction.guild.me
         if role is None: groups["🎭 Autorole & DM"].append(f"🔴 Role `{AUTO_ROLE_ID}` missing")
@@ -2970,11 +3924,36 @@ async def health_check(interaction, test_users: Optional[str]=None, test_dm: boo
         payload, err = await fetch_external_db(bot.session, cfg, force_refresh=True)
         if payload: groups["🗄️ External DBs"].append(f"🟢 {cfg['name']} — `{len(payload['records'])}` rows (`{int((time.perf_counter()-t0)*1000)}ms`)")
         else: groups["🗄️ External DBs"].append(f"🔴 {cfg['name']} — {err[:60]}")
+    if not EXTERNAL_DATABASES:
+        groups["🗄️ External DBs"].append("⚪ None configured")
+    try:
+        row = await db_fetchone("SELECT COUNT(*) FROM preemptive_scans")
+        total_pre = row[0] if row else 0
+        row = await db_fetchone(
+            "SELECT COUNT(*) FROM preemptive_scans WHERE identity_scanned_at >= ?",
+            ((datetime.now(timezone.utc) - timedelta(days=IDENTITY_TTL_DAYS)).isoformat(),))
+        id_fresh = row[0] if row else 0
+        row = await db_fetchone(
+            "SELECT COUNT(*) FROM preemptive_scans WHERE xtracker_scanned_at >= ?",
+            ((datetime.now(timezone.utc) - timedelta(days=XTRACKER_CACHE_TTL_DAYS)).isoformat(),))
+        xt_fresh = row[0] if row else 0
+        row = await db_fetchone(
+            "SELECT COUNT(*) FROM preemptive_scans WHERE freshness_scanned_at >= ?",
+            ((datetime.now(timezone.utc) - timedelta(minutes=FRESHNESS_TTL_MIN)).isoformat(),))
+        fresh_fresh = row[0] if row else 0
+        groups["🧠 Preemptive"].append(f"Records: `{total_pre}`")
+        groups["🧠 Preemptive"].append(f"id fresh: `{id_fresh}` · xtracker fresh: `{xt_fresh}` · fresh: `{fresh_fresh}`")
+        groups["🧠 Preemptive"].append(f"Hits: `{bot._metrics_preemptive_hits}` · Misses: `{bot._metrics_preemptive_misses}` · Bloxlink timeouts: `{bot._metrics_bloxlink_timeouts}`")
+        groups["🧠 Preemptive"].append(f"TTLs — identity `{IDENTITY_TTL_DAYS}d` · xtracker `{XTRACKER_CACHE_TTL_DAYS}d` · freshness `{FRESHNESS_TTL_MIN}m`")
+    except Exception as e:
+        groups["🧠 Preemptive"].append(f"🔴 {e}")
     try:
         await db_fetchone("SELECT 1")
         groups["💾 System"].append("🟢 SQLite DB")
     except Exception as e: groups["💾 System"].append(f"🔴 DB — {e}")
-    groups["💾 System"].append(f"🟢 Bot v`{BOT_VERSION}` · checks v`{CHECKS_VERSION}` · {BRAND_NAME or 'BGC Bot'}")
+    groups["💾 System"].append(f"🟢 Bot v`{BOT_VERSION}` · checks v`{CHECKS_VERSION}`" + (f" · **{BRAND_NAME}**" if BRAND_NAME else ""))
+    groups["💾 System"].append(f"aiodns: `{'on' if _AIODNS_AVAILABLE else 'off'}` · Xtracker limiter: `{bot.xtracker_limiter.interval:.2f}s` · Bloxlink cap: `{BLOXLINK_HARD_TIMEOUT_MS}ms`")
+    groups["💾 System"].append(f"made by {BOT_AUTHOR} · {BOT_AUTHOR_URL}")
     e = discord.Embed(title=branded("🩺 Health Check"), color=T.BRAND, timestamp=datetime.now(timezone.utc))
     for name, lines in groups.items():
         if lines: e.add_field(name=name, value="\n".join(lines)[:1024], inline=False)
@@ -3034,107 +4013,206 @@ async def health_quick(interaction):
         timestamp=datetime.now(timezone.utc)), ephemeral=True)
 
 
-@health_group.command(name="timeline", description="Timeline of a test BGC — no cache reset, no DB writes.")
-async def health_timeline(interaction):
+@health_group.command(name="preemptive",
+                      description="Seed a preemptive record for a user (for fast-path testing)")
+@app_commands.describe(target="Discord @mention / Discord ID in this guild")
+async def health_preemptive(interaction, target: str):
     if not authorized(interaction):
         await interaction.response.send_message(branded("Not authorized."), ephemeral=True); return
-    if not HEALTH_TEST_ROBLOX_ID or not HEALTH_TEST_DISCORD_ID:
-        await interaction.response.send_message(branded(
-            "Set `HEALTH_TEST_ROBLOX_ID` and `HEALTH_TEST_DISCORD_ID` env vars first."),
-            ephemeral=True)
-        return
+    guild = interaction.guild
+    if not guild:
+        await interaction.response.send_message(branded("Guild only."), ephemeral=True); return
+    did = parse_discord_target(target)
+    if did is None:
+        await interaction.response.send_message(branded("Provide a Discord @mention or ID."), ephemeral=True); return
+    member = guild.get_member(did)
+    if member is None:
+        await interaction.response.send_message(branded("User not in this guild."), ephemeral=True); return
+    await interaction.response.defer(ephemeral=True)
+    key = (did, guild.id)
+    if key in _pending_preemptive:
+        await interaction.followup.send(branded("Scan already in progress."), ephemeral=True); return
+    _pending_preemptive.add(key)
+    await _preemptive_scan(member, guild, key)
+    row = await db_fetchone(
+        "SELECT bloxlink_roblox_id, bloxlink_status, identity_scanned_at, xtracker_scanned_at, freshness_scanned_at "
+        "FROM preemptive_scans WHERE discord_id=? AND guild_id=?",
+        (did, guild.id))
+    if not row:
+        await interaction.followup.send(branded("Scan did not produce a record (see logs)."), ephemeral=True); return
+    e = discord.Embed(title=branded("🧠 Preemptive Seeded"), color=T.SUCCESS,
+                      timestamp=datetime.now(timezone.utc))
+    e.add_field(name="User", value=f"<@{did}> (`{did}`)", inline=False)
+    e.add_field(name="Roblox ID", value=f"`{row[0] or '—'}`", inline=True)
+    e.add_field(name="Status", value=f"`{row[1] or '—'}`", inline=True)
+    e.add_field(name="Identity scanned", value=row[2] or "—", inline=False)
+    e.add_field(name="Xtracker scanned", value=row[3] or "—", inline=False)
+    e.add_field(name="Freshness scanned", value=row[4] or "—", inline=False)
+    await interaction.followup.send(embed=e, ephemeral=True)
+
+
+@health_group.command(name="timeline",
+                      description="Live-path BGC timeline. Preemptive cache bypassed. Full per-task timings.")
+@app_commands.describe(target="Optional: Discord @mention / Discord ID (defaults to HEALTH_TEST_DISCORD_ID)")
+async def health_timeline(interaction, target: Optional[str]=None):
+    if not authorized(interaction):
+        await interaction.response.send_message(branded("Not authorized."), ephemeral=True); return
+    did = None; member = None
+    if target:
+        did = parse_discord_target(target)
+        if did is None:
+            await interaction.response.send_message(branded("Provide a Discord @mention or ID."), ephemeral=True); return
+        if interaction.guild:
+            member = interaction.guild.get_member(did)
+    else:
+        did = HEALTH_TEST_DISCORD_ID
+        if not did or not HEALTH_TEST_ROBLOX_ID:
+            await interaction.response.send_message(branded(
+                "Pass `target` or set `HEALTH_TEST_ROBLOX_ID` + `HEALTH_TEST_DISCORD_ID` in config."),
+                ephemeral=True)
+            return
+        if interaction.guild:
+            member = interaction.guild.get_member(did)
+
     await interaction.response.defer(ephemeral=True)
 
-    info, info_err = await roblox_user_info(bot.session, HEALTH_TEST_ROBLOX_ID)
-    if not info or not info.get("name"):
-        await interaction.followup.send(branded(
-            f"Could not resolve HEALTH_TEST_ROBLOX_ID={HEALTH_TEST_ROBLOX_ID}: "
-            f"{info_err or 'no name in response'}"), ephemeral=True)
-        return
-    username = info["name"]
+    rid_hint = HEALTH_TEST_ROBLOX_ID if not target else None
+    username = None
+    if rid_hint:
+        info, info_err = await roblox_user_info(bot.session, rid_hint)
+        if not info or not info.get("name"):
+            await interaction.followup.send(branded(f"Could not resolve test Roblox ID {rid_hint}: {info_err}"), ephemeral=True); return
+        username = info["name"]
+    elif did:
+        hist = await get_all_roblox_history(did, interaction.guild_id or 0)
+        if hist:
+            info, _ = await roblox_user_info(bot.session, hist[0][0])
+            if info and info.get("name"): username = info["name"]
 
-    member = None
-    if interaction.guild:
-        member = interaction.guild.get_member(HEALTH_TEST_DISCORD_ID)
+    if not username:
+        await interaction.followup.send(branded("Could not resolve a Roblox username for this user."), ephemeral=True); return
 
-    cache_state = "warm" if _caches_hot() else "cold"
+    if rid_hint:
+        _roblox_info_cache.pop(rid_hint, None)
+        _roblox_hist_cache.pop(rid_hint, None)
+        _roblox_groups_cache.pop(rid_hint, None)
+        _simmer_cache.pop(rid_hint, None)
+
+    cache_state = "warm" if _caches_hot() else "COLD"
 
     timings = []
     t_start = time.perf_counter()
     try:
         result = await run_bgc_core(
-            username, HEALTH_TEST_DISCORD_ID, interaction.guild_id or 0,
+            username, did, interaction.guild_id or 0,
             message_id=None, parsed_self_report=None,
             force_blacklist_refresh=False,
             timings=timings, member=member,
             skip_db_history=True,
-        )
+            skip_preemptive=True)
     except Exception as e:
         await interaction.followup.send(branded(
             f"Timeline probe raised: {type(e).__name__}: {e}"), ephemeral=True)
         return
     total = (time.perf_counter() - t_start) * 1000.0
 
-    def _start_ms(t): return (t["start"] - t_start) * 1000.0
-    def _end_ms(t):   return (t["end"]   - t_start) * 1000.0
-    def _dur_ms(t):   return (t["end"]   - t["start"]) * 1000.0
+    header = [
+        "══════ BGC TIMELINE (LIVE PATH) ══════",
+        f"Discord:  {did}" + (" (member)" if member else " (not cached)"),
+        f"Roblox:   {username}" + (f" ({rid_hint})" if rid_hint else ""),
+        f"Cache:    {cache_state}",
+        f"Mode:     live path — preemptive bypassed",
+        f"Xtracker: limiter={bot.xtracker_limiter.interval:.2f}s",
+        f"Bloxlink: hard timeout {BLOXLINK_HARD_TIMEOUT_MS}ms",
+    ]
+    body = _format_timeline(timings, t_start, total, result, header)
+    body += "\n\n─ Notes ─\n"
+    body += "• Per-UID Roblox caches cleared — this is what a fresh applicant sees.\n"
+    body += "• Preemptive was bypassed for a pure live-path measurement.\n"
+    body += "• Use /health preemptive_timeline @user for the fast-path comparison.\n"
 
-    def _tier(name):
-        if name in ("user_blacklist","discord_age","roblox_watcher","exploit_watcher",
-                    "group_blacklist","bloxlink","typed_lookup"):
-            return 0
-        if name in ("keystone","external_dbs","multi_account") or name.endswith("_hist"):
-            return 2
-        return 1
+    for i in range(0, len(body), 1900):
+        await interaction.followup.send(body[i:i+1900], ephemeral=True)
 
-    t0_tasks = [t for t in timings if _tier(t["name"]) == 0]
-    t2_tasks = [t for t in timings if _tier(t["name"]) == 2]
 
-    id_ready = max((_end_ms(t) for t in timings if t["name"] in ("bloxlink", "typed_lookup")), default=0.0)
-    info_task = next((t for t in timings if t["name"].startswith("user_info")), None)
-    hist_task = next((t for t in timings if t["name"].startswith("username_history")), None)
-    info_done = _end_ms(info_task) if info_task else 0.0
-    hist_done = _end_ms(hist_task) if hist_task else 0.0
-    t0_gate = max(t0_tasks, key=_end_ms, default=None)
-    t2_gate = max(t2_tasks, key=_end_ms, default=None)
-    longest = max(timings, key=_dur_ms, default=None) if timings else None
-    xtracker_tasks = [t for t in timings if t["name"].startswith("xtracker")]
-    xtracker_serial = sum(_dur_ms(t) for t in xtracker_tasks)
+@health_group.command(name="preemptive_timeline",
+                      description="Seed preemptive for a user, then measure the fast-path BGC (seed time excluded)")
+@app_commands.describe(target="Discord @mention / Discord ID in this guild")
+async def health_preemptive_timeline(interaction, target: str):
+    if not authorized(interaction):
+        await interaction.response.send_message(branded("Not authorized."), ephemeral=True); return
+    guild = interaction.guild
+    if not guild:
+        await interaction.response.send_message(branded("Guild only."), ephemeral=True); return
+    did = parse_discord_target(target)
+    if did is None:
+        await interaction.response.send_message(branded("Provide a Discord @mention or ID."), ephemeral=True); return
+    member = guild.get_member(did)
+    if member is None:
+        await interaction.response.send_message(branded("User not in this guild."), ephemeral=True); return
+    await interaction.response.defer(ephemeral=True)
 
-    lines = []
-    lines.append("══════ BGC TIMELINE PROBE ══════")
-    lines.append(f"Discord:  {HEALTH_TEST_DISCORD_ID}" + (" (member)" if member else " (not cached)"))
-    lines.append(f"Roblox:   {username} ({HEALTH_TEST_ROBLOX_ID})")
-    lines.append(f"Result:   {'PASS' if result['passed']} — {result['reason']}")
-    lines.append(f"Total:    {total:.0f}ms   Cache: {cache_state}")
-    lines.append("")
-    lines.append("```")
-    lines.append(f"{'START':>10} {'END':>10} {'DUR':>10}  NAME")
-    for t in sorted(timings, key=lambda x: x["start"]):
-        lines.append(f"{_start_ms(t):>8.1f}ms {_end_ms(t):>8.1f}ms {_dur_ms(t):>8.1f}ms  {t['name']}")
-    lines.append("```")
-    lines.append("")
-    lines.append("─ Gates ─")
-    lines.append(f"• T0 → T1 fire: T={id_ready:.0f}ms")
-    if t0_gate:
-        lines.append(f"  - T0 slowest: {t0_gate['name']} T={_end_ms(t0_gate):.0f}ms")
-    if info_task:
-        lines.append(f"• Identity finalized: T={info_done:.0f}ms")
-    if hist_task:
-        lines.append(f"• T1 → T2 fire: T={hist_done:.0f}ms")
-    if t2_gate:
-        lines.append(f"• T2 slowest: {t2_gate['name']} T={_end_ms(t2_gate):.0f}ms")
-    if longest:
-        lines.append(f"• Longest task: {longest['name']} — {_dur_ms(longest):.0f}ms")
-    if xtracker_tasks:
-        lines.append(f"• Xtracker: {len(xtracker_tasks)} call(s), serialized ≈ {xtracker_serial:.0f}ms")
-    lines.append("")
-    lines.append("─ Notes ─")
-    lines.append(f"• Cache: {cache_state}")
-    lines.append(f"• Progress bar: ~6 × {PROGRESS_MIN_DWELL*1000:.0f}ms Discord round-trips (when shown)")
-    lines.append("• No DB history, no DB writes — safe to re-run.")
+    async with bot.db_lock:
+        await bot.db.execute("DELETE FROM preemptive_scans WHERE discord_id=? AND guild_id=?", (did, guild.id))
+        await bot.db.commit()
+    _bloxlink_late_cache.pop((did, guild.id), None)
 
-    body = "\n".join(lines)
+    key = (did, guild.id)
+    _pending_preemptive.discard(key)
+    _pending_preemptive.add(key)
+    t_pre_start = time.perf_counter()
+    try:
+        await _preemptive_scan(member, guild, key)
+    except Exception as e:
+        await interaction.followup.send(branded(f"Preemptive scan raised: {type(e).__name__}: {e}"), ephemeral=True); return
+    t_pre_ms = (time.perf_counter() - t_pre_start) * 1000.0
+
+    row = await db_fetchone(
+        "SELECT bloxlink_roblox_id, bloxlink_status, identity_scanned_at, xtracker_scanned_at, freshness_scanned_at "
+        "FROM preemptive_scans WHERE discord_id=? AND guild_id=?", (did, guild.id))
+    if not row:
+        await interaction.followup.send(branded("Preemptive scan produced no record — see logs."), ephemeral=True); return
+    if not row[0]:
+        await interaction.followup.send(branded(
+            f"Preemptive resolved no Roblox ID (status: `{row[1]}`). "
+            f"Use /health timeline @{did} for the live path."), ephemeral=True); return
+    preemptive_rid = row[0]
+
+    info, info_err = await roblox_user_info(bot.session, preemptive_rid)
+    if not info or not info.get("name"):
+        await interaction.followup.send(branded(f"Could not resolve Roblox ID {preemptive_rid}: {info_err}"), ephemeral=True); return
+    username = info["name"]
+
+    timings = []
+    t_start = time.perf_counter()
+    try:
+        result = await run_bgc_core(
+            username, did, guild.id,
+            message_id=None, parsed_self_report=None,
+            force_blacklist_refresh=False,
+            timings=timings, member=member,
+            skip_db_history=True,
+            skip_preemptive=False)
+    except Exception as e:
+        await interaction.followup.send(branded(
+            f"Timeline raised: {type(e).__name__}: {e}"), ephemeral=True); return
+    total = (time.perf_counter() - t_start) * 1000.0
+
+    header = [
+        "══════ BGC TIMELINE (PREEMPTIVE FAST PATH) ══════",
+        f"Discord:  {did} (member)",
+        f"Roblox:   {username} ({preemptive_rid})",
+        f"Preemptive seed: {t_pre_ms:.0f}ms (NOT counted in BGC time)",
+        f"Bloxlink status: {row[1]}",
+        f"Mode:     preemptive ENABLED — fast path as users experience",
+        f"Xtracker: limiter={bot.xtracker_limiter.interval:.2f}s",
+    ]
+    body = _format_timeline(timings, t_start, total, result, header)
+    body += "\n\n─ Notes ─\n"
+    body += f"• Preemptive seed: {t_pre_ms:.0f}ms — done before timing, not part of BGC total.\n"
+    body += "• Xtracker cached 3 days; groups/simmer 30 min; identity 7 days.\n"
+    body += "• Compare with /health timeline @user for the live-path baseline.\n"
+
     for i in range(0, len(body), 1900):
         await interaction.followup.send(body[i:i+1900], ephemeral=True)
 
@@ -3222,10 +4300,14 @@ async def wipeuser_cmd(interaction, target: str, hard: bool = False):
                 deleted_logs = cur.rowcount
             async with bot.db.execute(f"DELETE FROM bgc_checks WHERE id IN ({','.join('?'*len(bgc_ids))})", bgc_ids) as cur:
                 deleted_bgc = cur.rowcount
+        for did in discord_ids:
+            await bot.db.execute("DELETE FROM preemptive_scans WHERE discord_id=? AND guild_id=?", (did, gid))
+            _bloxlink_late_cache.pop((did, gid), None)
         await bot.db.commit()
     e = discord.Embed(title=branded("🗑️ User Wipe Complete"),
                       description=(f"**Target:** {display}\n"
                                    f"Deleted **{deleted_bgc}** BGC record(s) and **{deleted_logs}** check-log row(s).\n"
+                                   f"Preemptive records also wiped.\n"
                                    f"External blacklists untouched."),
                       color=T.SUCCESS, timestamp=datetime.now(timezone.utc))
     await interaction.followup.send(embed=e, ephemeral=True)
@@ -3236,29 +4318,32 @@ async def wipeuser_cmd(interaction, target: str, hard: bool = False):
 
 # ==================== RUN ====================
 def _validate_config():
-    if not DISCORD_BOT_TOKEN:
-        logger.error("DISCORD_BOT_TOKEN is required. Set it as an environment variable.")
+    if not DISCORD_BOT_TOKEN or DISCORD_BOT_TOKEN.startswith("PASTE"):
+        logger.error("DISCORD_BOT_TOKEN is required — set it in the CONFIG section.")
         raise SystemExit(1)
-    optional = []
+    missing = []
     for name, val in [("XTRACKER_API_KEY", XTRACKER_API_KEY),
-                      ("ROBLOXWATCHER_API_KEY", RW_API_KEY),
-                      ("EXPLOITWATCHER_API_KEY", EW_API_KEY),
+                      ("RW_API_KEY", RW_API_KEY),
+                      ("EW_API_KEY", EW_API_KEY),
                       ("SIMMER_API_KEY", SIMMER_API_KEY)]:
-        if not val: optional.append(name)
-    if BLOXLINK_ENABLED and not BLOXLINK_API_KEY:
-        optional.append("BLOXLINK_API_KEY")
-    if optional:
-        logger.warning(f"Optional credentials not set (checks will SKIP): {', '.join(optional)}")
+        if not val or val.startswith("PASTE"):
+            missing.append(name)
+    if BLOXLINK_ENABLED and (not BLOXLINK_API_KEY or BLOXLINK_API_KEY.startswith("PASTE")):
+        logger.warning("Bloxlink enabled but no key — falling back to typed usernames only.")
+    if missing:
+        logger.warning(f"Optional API keys not set (checks will SKIP): {', '.join(missing)}")
     if not BLACKLIST_SHEET_ID:
-        logger.warning("BLACKLIST_SHEET_ID not set — group/user blacklist checks will error.")
+        logger.info("BLACKLIST_SHEET_ID not set — user/group blacklist checks will return empty.")
     if not SNOW_CORE_SHEET_ID:
-        logger.warning("SNOW_CORE_SHEET_ID not set — Snow Core check will error.")
-    if OWNER_ID is None:
-        logger.info("OWNER_ID not set — owner-only commands require Administrator permission.")
-    if AUTO_ROLE_ID is None:
-        logger.info("AUTO_ROLE_ID not set — passing users will not be auto-roled.")
-    if DEFAULT_RECRUITMENT_CHANNEL_ID is None:
-        logger.info("RECRUITMENT_CHANNEL_ID not set — run /setup in each guild to configure.")
+        logger.info("SNOW_CORE_SHEET_ID not set — Snow Core checks will return empty.")
+    if not EXTERNAL_DATABASES:
+        logger.info("EXTERNAL_DATABASES empty — external DB checks will be skipped.")
+    if not OWNER_ID:
+        logger.info("OWNER_ID not set — /reset disabled, owner DMs disabled.")
+    if not AUTO_ROLE_ID:
+        logger.info("AUTO_ROLE_ID not set — pass-through autorole disabled, acceptance DM not sent.")
+    if not DEFAULT_RECRUITMENT_CHANNEL_ID:
+        logger.info("DEFAULT_RECRUITMENT_CHANNEL_ID not set — run /setup or set it in CONFIG.")
 
 
 def _signal_handler(s, f):
@@ -3273,3 +4358,5 @@ if __name__ == "__main__":
     signal.signal(signal.SIGINT, _signal_handler)
     try: bot.run(DISCORD_BOT_TOKEN)
     except KeyboardInterrupt: pass
+
+# ── Made by Pizzarobloxh · github.com/Pizzarobloxh ──
