@@ -1,215 +1,168 @@
 # Privacy Policy
 
-**Project:** Pizzarobloxh's Discord Bot (generative ai made) 
+**Last updated:** [21/10/2026]
 
-**Bot:** BGC Bot v4.4.0  
-**Developer:** Pizzarobloxh  
-**Effective Date:** October 20, 2026  
-**Last Updated:** October 20, 2026
+This Privacy Policy explains what data the BGC Bot ("the Bot") collects, why, how long it is kept, and who it is shared with.
 
----
-
-## Table of Contents
-
-1. [Introduction](#1-introduction)
-2. [Information We Collect](#2-information-we-collect)
-3. [How We Use the Information](#3-how-we-use-the-information)
-4. [Data Retention](#4-data-retention)
-5. [Data Security](#5-data-security)
-6. [Third-Party Services](#6-third-party-services)
-7. [Children's Privacy](#7-childrens-privacy)
-8. [Your Rights](#8-your-rights)
-9. [Changes to This Policy](#9-changes-to-this-policy)
-10. [Contact](#10-contact)
+The Bot is operated by the person or group that deployed it ("the Operator"). In most cases the Operator is not the same person as the maintainer of the source code. If you have questions, contact the Operator through the server where the Bot runs.
 
 ---
 
-## 1. Introduction
+## 1. Data the Bot collects
 
-This Privacy Policy describes how **Pizzarobloxh**'s Discord Bot, **BGC Bot v4.4.0** ("the Bot"), collects, uses, stores, and protects information when you interact with it. By using the Bot, you agree to the practices described in this policy.
+The Bot processes data at three points: when you type in the recruitment channel, when you submit an application, and when you interact with its commands.
 
-This policy covers only the single Discord Bot identified above. It does not cover any other application, service, or bot made by Pizzarobloxh unless expressly stated.
+### When you type in the recruitment channel
 
-We are committed to transparency and to handling your information responsibly. We only collect what is necessary to operate the Bot effectively.
+The Bot runs a background identity scan the moment you start typing. It collects:
 
----
+- Your Discord user ID and username
+- Your Discord nickname (if set)
+- The Discord account creation date (derived from your ID)
+- The Roblox ID linked to your Discord account via Bloxlink (if any)
+- Your Roblox profile info: username, display name, account creation date, banned status
+- Your Roblox username history
+- Your Roblox group memberships
+- Xtracker registry and ownership results for each of your known Roblox IDs
+- Simmer RAB result
 
-## 2. Information We Collect
+These are stored in a `preemptive_scans` database table so that a submission can be checked quickly.
 
-### 2.1 Discord Data
+### When you submit an application
 
-When you interact with the Bot, we may collect and store:
+The Bot reads the content of your message in the recruitment channel and parses:
 
-- **Discord User IDs** — a unique numerical identifier assigned to your Discord account by Discord.
-- **Discord usernames** — when provided by you (for example, typed into a recruitment application or passed to a command), and the username and display name associated with your Discord account when you submit an application.
+- The Roblox username you typed
+- The Discord username you typed
+- Your answers to "Clanning Experience" and "Willing to Join"
 
-We do **not** collect:
+The full message text is not stored verbatim. Only the parsed fields are kept.
 
-- Your email address
-- Your IP address
-- Your payment or billing information
-- Your Discord password, token, or login credentials
+The Bot then queries the same sources as above plus:
 
-### 2.2 Roblox Data
+- Your own blacklists (users and groups)
+- Keystone cases
+- Snow Core bans
+- Six external community blacklists
+- Roblox Watcher flags
+- Exploit Watcher flags
 
-Because the Bot performs background checks ("BGC") against Roblox accounts, we collect and store **public Roblox profile data** associated with a Roblox username or ID you submit:
+Results are stored in a `bgc_checks` table with per-check details in a `check_logs` table.
 
-- **Roblox User ID**
-- **Roblox username** (current)
-- **Roblox display name**
-- **Past Roblox usernames** (via Roblox's public username-history API)
-- **Roblox account creation date**
-- **Roblox group memberships** (public)
+### When you interact with commands
 
-This data is publicly visible on roblox.com and is fetched using Roblox's public APIs. We do **not** collect private Roblox data such as email, password, inventory contents, or transaction history.
+Command usage records: the interaction user's Discord ID, the command name, and — for `/check`, `/lookup`, `/wipeuser`, `/health preemptive`, `/health timeline` — the target identity.
 
-Where a typed Roblox username resolves to a different account than the one linked through Bloxlink, public profile data for **both** accounts may be retrieved and stored. See [§2.6](#2-6-identity-mismatch-screening).
+### Always
 
-### 2.3 Application Content
-
-When you submit a recruitment application in a channel where the Bot is configured to operate, the Bot reads the **content of that specific message** to extract:
-
-- Roblox username
-- Discord username
-- Clanning-experience answer
-- X-Tracker self-report answer
-- Willing-to-join answer
-
-The extracted fields and the final check results are stored in our database, along with metadata such as the bot version and check-rules version used. The **raw message body is not persisted** — only the parsed fields and the outcome of our checks.
-
-### 2.4 Server / Guild Data
-
-We may collect and store data related to the Discord servers ("guilds") in which the Bot operates. This may include:
-
-- **Server (Guild) IDs** — unique numerical identifiers for Discord servers
-- **Channel IDs** — to identify specific channels where the Bot is configured to operate
-- **Role IDs** — where role-based permissions or features are configured
-- **Server configuration settings** — preferences or settings that server administrators configure for the Bot
-
-We do **not** collect or log general message content from server members outside of the recruitment channels the Bot is configured to monitor.
-
-### 2.5 Administrative Bypass
-
-Messages posted by users with **Administrator** or **Manage Server** permissions in a guild are ignored entirely by the Bot — no data is collected, stored, or processed from those messages.
-
-### 2.6 Identity Mismatch Screening
-
-When you submit a recruitment application, the Bot resolves:
-
-1. the **typed Roblox username** you submitted, and
-2. the **Roblox account linked to your Discord account through Bloxlink**.
-
-If these resolve to different Roblox accounts, the Bot screens **both** accounts. This means:
-
-- The typed username's public Roblox profile data (username, display name, past usernames, account creation date, public group memberships) is retrieved and stored.
-- The typed username's Roblox User ID is sent to **Xtracker**, **Simmer**, and **Snow Core** for watchlist screening.
-- The typed username and its Roblox ID are included in **Keystone** and **external blacklist** searches.
-
-This dual screening is performed to detect identity mismatches and attempted evasion. It means that a mistyped username could result in screening of an unrelated Roblox account. You are responsible for ensuring the accuracy of any username you submit.
+The Bot stores basic logging data on its own host: timestamps, HTTP status codes for external services, and error messages. These logs may contain Discord IDs, Roblox IDs, and usernames.
 
 ---
 
-## 3. How We Use the Information
+## 2. Why the Bot collects this data
 
-The information we collect is used solely to:
-
-- **Provide and operate** the Bot's features, including background checks, watchlist lookups, and moderation tooling.
-- **Cross-reference submitted Roblox identities against screening databases** (see [§6](#6-third-party-services)) to detect known-bad actors, ban evasion, or multi-account patterns.
-- **Screen both the typed and Bloxlink-linked Roblox identities when they differ**, to detect identity mismatches and attempted evasion.
-- **Store server-specific configurations** set by server administrators.
-- **Track usage permissions** and ensure appropriate access control.
-- **Enforce our Terms of Service**, including investigating abuse or misuse.
-- **Detect multi-account patterns and identity mismatches** by comparing historical checks within the same guild and by screening both typed and Bloxlink-linked identities when they differ.
-
-We do **not** sell, rent, or share your data with third parties for marketing or advertising purposes.
+- **To perform the requested checks.** The Bot cannot decide whether an application passes without knowing who applied.
+- **To remember previous decisions.** Multi-account detection requires knowing which Discord IDs have previously been associated with which Roblox IDs.
+- **To speed up repeat applications.** The preemptive scan runs ahead of your submission so that the actual check is faster.
+- **To let moderators audit decisions.** Moderators can use `/debug` to see why an application passed or failed.
 
 ---
 
-## 4. Data Retention
+## 3. Third parties the Bot contacts
 
-We retain collected data only for as long as necessary to provide the Bot's services:
+Performing a check requires sending your data to these services:
 
-- **Discord User IDs, Roblox IDs, and check results** are retained as long as they are associated with active Bot functionality, including BGC history and multi-account detection.
-- **Server/Guild data** is retained for as long as the Bot remains in the server. When the Bot is removed, associated server data may be deleted automatically or upon request.
-- **Message-derived fields** (see [§2.3](#2-3-application-content)) are retained alongside the corresponding BGC record and are removed if that record is deleted.
-- **Diagnostic logs** containing operational metadata may be retained locally for troubleshooting and are rotated automatically.
-- **Server administrators** can wipe all BGC history for their server at any time using the Bot's administrative commands.
-- **Individual users** may request deletion of their data via the contact in [§10](#10-contact).
+| Service | What is sent | What is received |
+| :--- | :--- | :--- |
+| Roblox (via `users.rotunnel.com`, `users.roproxy.com`, `users.roblox.com`, and the `groups` equivalents) | Username, Roblox ID | Profile, groups, history, banned status |
+| Bloxlink (`api.blox.link`) | Discord ID, server ID | Linked Roblox ID |
+| Xtracker (`api.xtracker.xyz`) | Roblox ID | Registry and ownership results |
+| Keystone (`api.keystone-swords.com`) | Your Roblox IDs and usernames (in the query) | Full case list (filtered locally) |
+| Simmer (`api.simmer.icu`) | Roblox ID | RAB result |
+| Snow Core (Google Sheets via `docs.google.com`) | Nothing (full sheet downloaded) | Ban list |
+| Roblox Watcher (`api.robloxwatcher.com`) | Discord ID | Flag result |
+| Exploit Watcher (`api.robloxwatcher.com`) | Discord ID | Flag result |
+| Google Sheets (each external blacklist) | Nothing (full sheet downloaded) | Ban list |
 
----
+The Bot sends the minimum data required for each query. It does not send your full Discord message content, your application answers, or your chat history to any third party.
 
-## 5. Data Security
-
-We take reasonable technical measures to protect the data we collect from unauthorized access, loss, or misuse, including:
-
-- Local SQLite storage with WAL mode and normal synchronous settings.
-- Bot access restricted to server administrators.
-- Local diagnostic logs use rotating file handlers with size limits.
-- No external analytics trackers.
-
-However, no system is completely secure, and we cannot guarantee absolute security of the information stored. We encourage server administrators to follow Discord's best practices for server security.
+Each of these services has its own privacy policy. You are subject to their policies when the Bot queries them on your behalf. The Operator does not control what these services do with the data after they receive it.
 
 ---
 
-## 6. Third-Party Services
+## 4. How long data is kept
 
-The Bot operates within the **Discord platform**, which has its own [Privacy Policy](https://discord.com/privacy) and [Terms of Service](https://discord.com/terms). We are not responsible for Discord's data practices.
+| Data | Retention |
+| :--- | :--- |
+| `bgc_checks` (applications and their results) | Indefinite — until deleted via `/wipeuser` or `/reset clear_history:True` |
+| `check_logs` (per-check details) | Same as `bgc_checks` |
+| `guild_settings` (server configuration) | Indefinite |
+| `preemptive_scans` (background scan cache) | Automatically deleted once both identity and freshness scans are more than 30 days old |
+| In-memory caches (Roblox profile, groups, history, Simmer) | 10 minutes to 30 minutes |
+| In-memory caches (Bloxlink resolution) | 30 minutes |
+| Guild log channel cache | 60 seconds |
+| Race winner logs | 10 minutes |
+| Server-side logs | Rotation: 10 MB per file, 5 files maximum |
 
-To perform screening checks, the Bot sends **public Roblox identifiers** (Roblox User ID and/or username) to the following third-party services. Each is governed by its own privacy policy:
-
-| Service | Purpose | Data Sent |
-|---|---|---|
-| Roblox APIs (`roblox.com`, `roproxy.com`, `rotunnel.com`) | Identity resolution, username history, group membership | Roblox User ID / username |
-| Bloxlink (`api.blox.link`) | Discord ↔ Roblox account linking | Discord User ID, Guild ID |
-| Google Sheets (`docs.google.com`) | Read-only lookup of public community blacklist databases, including Snow Core | None (read-only fetch) |
-| `api.xtracker.xyz` | Xtracker watchlist lookup | Roblox User ID |
-| `api.robloxwatcher.com` (Roblox Watcher) | Roblox Watcher watchlist lookup | Discord User ID |
-| `api.robloxwatcher.com` (Exploit Watcher product) | Exploit Watcher watchlist lookup | Discord User ID |
-| `api.keystone-swords.com` | Keystone case-registry lookup | Roblox User ID / username |
-| `api.simmer.icu` | Simmer RAB (Raid Activity Ban) lookup | Roblox User ID |
-
-**Dual-identity screening.** When a typed Roblox username and a Bloxlink-linked account differ, the typed account's Roblox User ID may also be sent to Xtracker, Simmer, and Snow Core (via Google Sheets) for screening.
-
-**Reduced historical queries.** For historical Roblox IDs beyond the most recent historical identity, Xtracker ownership checks are not performed; only registry checks are performed. This reduces third-party queries for historical identities.
-
-**Diagnostic commands.** The Bot owner has access to diagnostic commands, such as `/health check` and `/health timeline`, that run screening checks on configured test identifiers or identifiers specified by the owner. The `/health timeline` command does not read stored user history and does not write to the database. These commands are not available to regular users.
-
-We do **not** send your Discord username, email, IP address, or any data beyond the identifiers listed above. We do not use any advertising or analytics trackers.
+Deleting your data via `/wipeuser` removes your records from `bgc_checks`, `check_logs`, and `preemptive_scans`. It does not affect any external service — those services have their own retention policies.
 
 ---
 
-## 7. Children's Privacy
+## 5. Your rights
 
-The Bot is not directed at children under the age of 13, or the applicable age in your jurisdiction. We do not knowingly collect data from children. If you believe a child has used the Bot in violation of this policy, please contact us so we can take appropriate action.
+You have the following rights, subject to the Operator's verification that you are the person the data relates to:
 
----
+- **Access** — you may ask the Operator what data is stored about you
+- **Deletion** — you may ask the Operator to delete your local data using `/wipeuser`
+- **Correction** — you may ask the Operator to correct inaccurate data
+- **Portability** — you may ask the Operator for a copy of your stored data
 
-## 8. Your Rights
-
-Depending on your location, you may have certain rights regarding your data, including:
-
-- **Access** — the right to know what data we hold about you.
-- **Deletion** — the right to request deletion of your data.
-- **Correction** — the right to request correction of inaccurate data.
-
-To exercise any of these rights, please contact us via the official **Pizzarobloxh** Discord support server (see [§10](#10-contact)). We will respond to requests within a reasonable timeframe.
-
-Server administrators may also independently wipe guild data using the Bot's administrative commands, including the `/wipeuser` command for deleting local BGC data about a specific user.
+Requests should be made through the server's moderators. External database operators must be contacted separately — the Operator cannot delete data from third-party services.
 
 ---
 
-## 9. Changes to This Policy
+## 6. Children
 
-We may update this Privacy Policy from time to time. When we do, we will update the **Effective Date** at the top of this document. Continued use of the Bot after any changes constitutes acceptance of the updated policy. We encourage you to review this policy periodically.
+The Bot is not directed at children. If you are under the age required by Discord's Terms of Service, you may not use the Bot. If the Operator becomes aware that data has been collected from a child under the applicable age, the Operator will delete it.
+
+---
+
+## 7. Security
+
+The Bot stores data in a SQLite database on the Operator's host. The Operator takes reasonable steps to protect this database, but no system is perfectly secure. The Bot has no access controls beyond what the operating system provides.
+
+The bot token and API keys used by the Bot are stored in the source file and should be treated as sensitive. If a key is exposed, contact the Operator.
+
+---
+
+## 8. International data transfers
+
+The Bot runs on a server whose location is chosen by the Operator. External services that the Bot queries may be located anywhere in the world. By using the Bot you consent to your data being transferred to wherever the Operator's host and the third-party services are located.
+
+---
+
+## 9. Changes
+
+The Operator may update this Privacy Policy at any time. Updates take effect when posted. Continued use of the Bot after an update means you accept the updated policy.
+
+If a change materially affects how data is used, the Operator will make reasonable efforts to notify users — for example by posting in the bot-log channel.
 
 ---
 
 ## 10. Contact
 
-If you have any questions, concerns, or requests related to this Privacy Policy, please reach out via our official Discord support server for the Bot:
-
-**https://discord.gg/HW4ArA8rAE**
+Questions or requests should be directed to the Operator through the server where the Bot runs, or through the source repository.
 
 ---
 
-*This Privacy Policy was last updated on October 20, 2026.*
+## Summary
+
+To make an informed decision about using the Bot:
+
+- If you type in the recruitment channel, the Bot will scan your identity in the background
+- If you submit an application, the Bot will store the result permanently unless you ask for it to be deleted
+- Your Discord ID and Roblox ID are sent to several external services
+- You can request deletion via `/wipeuser` through server staff
+- External databases have their own retention which the Bot cannot control
+
+By using the Bot you confirm you have read this policy and understand what data is collected.
