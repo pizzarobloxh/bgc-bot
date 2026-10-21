@@ -1,374 +1,255 @@
 <div align="center">
 
-# 📊 Operating Documents
+# BGC Bot v5.0.0
 
-### The complete technical breakdown of BGC Bot v5.0.0
-
-*Every measurement, every diagram, every war story.*
-
-[![v2.1.0](https://img.shields.io/badge/v2.1.0-~6s-7f1d1d?style=for-the-badge)](https://github.com/Pizzarobloxh/bgc-bot)
-[![v4.0.0](https://img.shields.io/badge/v4.0.0-7989ms-dc2626?style=for-the-badge)](https://github.com/Pizzarobloxh/bgc-bot)
-[![v4.5.0](https://img.shields.io/badge/v4.5.0-1721ms-f59e0b?style=for-the-badge)](https://github.com/Pizzarobloxh/bgc-bot)
-[![v5.0.0 live](https://img.shields.io/badge/v5.0.0%20live-801ms-22c55e?style=for-the-badge)](https://github.com/Pizzarobloxh/bgc-bot)
-[![v5.0.0 preemptive](https://img.shields.io/badge/v5.0.0%20preemptive-65ms-8b5cf6?style=for-the-badge)](https://github.com/Pizzarobloxh/bgc-bot)
+### Technical documentation
 
 </div>
 
----
+Technical documentation for BGC Bot, covering its architecture, performance measurements, data sources, caching strategy, reliability mechanisms, and development history.
 
-## 📑 Contents
-
-- [The one chart that matters](#-the-one-chart-that-matters)
-- [Every version, measured](#-every-version-measured)
-- [The three eras](#-the-three-eras)
-- [What we actually search](#-what-we-actually-search)
-- [Speed vs coverage tradeoff](#-speed-vs-coverage-tradeoff)
-- [v5.0.0 in two Gantts](#-v500-in-two-gantts)
-- [How we got here — code archaeology](#-how-we-got-here--code-archaeology)
-- [Reliability](#-reliability)
-- [Roadmap](#-roadmap)
+The bot screens Discord recruitment applications against a Roblox identity, shared cheater databases, community watchlists, and multiple external ban lists. This document records how the implementation changed between versions, what was measured during performance testing, and which improvements are planned next.
 
 ---
 
-## 📈 The one chart that matters
+## Performance summary
 
-From **7989 ms** at v4.0.0 down to **65 ms** at v5.0.0 preemptive. That's a **123× speedup** in the version where the bot actually started doing *more* work.
+| Version | Execution path | Runtime | Source |
+| :--- | :--- | ---: | :--- |
+| v2.1.0 | live | ~6,000 ms | **Estimated** (inferred from code structure) |
+| v3.3.0 | live | 5,965 ms | Measured |
+| v3.6.0 | live | 5,961 ms | Measured |
+| v4.0.0 | live | 7,989 ms | Measured |
+| v4.5.0 | live | 1,721 ms | Measured |
+| v5.0.0 | live | 801 ms | Measured |
+| v5.0.0 | preemptive | 65 ms | Measured |
+
+**Measurement caveats:**
+
+- Every figure except v2.1.0 comes from a single `/health timeline` probe run per version, on warm shared caches and cleared per-UID caches. These are single observations, not statistical benchmarks — a repeat run on a different day would likely produce different numbers.
+- The preemptive path (65 ms) measures marginal work after a cache hit. The work that populated that cache (~3,300 ms of preemptive scan in the same session) ran while the user was typing, before submission. It is not directly comparable to the live path.
+- v2.1.0 is an estimate inferred from its code shape (fully sequential, no caching). It should not be treated as a controlled measurement.
+
+### Runtime by version
 
 ```mermaid
 xychart-beta
-    title "Total BGC time — every version"
-    x-axis ["v2.1.0*", "v3.3.0", "v3.6.0", "v4.0.0", "v4.5.0", "v5.0.0 live", "v5.0.0 preempt"]
+    title "Runtime by version and execution path"
+    x-axis ["v2.1.0*", "v3.3.0", "v3.6.0", "v4.0.0", "v4.5.0", "v5.0.0 live", "v5.0.0 pre."]
     y-axis "Milliseconds" 0 --> 8500
     bar [6000, 5965, 5961, 7989, 1721, 801, 65]
 ```
 
-*`v2.1.0` has no official measurement — the code structure (fully sequential, no caching, no waves) suggests it performed similarly to v3.3.0, so it's shown as ~6000 ms. See [code archaeology](#-how-we-got-here--code-archaeology) below.*
+*\*v2.1.0 is estimated.*
 
-**The takeaway:** v4.0.0 was *slower* than v3.6.0 because it added huge new coverage (6 external DBs + Keystone + Snow Core + Bloxlink). v4.5.0 and v5.0.0 then clawed that back and went 123× faster than the peak.
+### Zoomed view — v4.5.0 and later
 
----
-
-## 📊 Every version, measured
-
-| Version | Time | Era | Key change |
-| :--- | ---: | :--- | :--- |
-| **v2.1.0** | ~6000 ms* | Discovery | First working bot. Fully sequential. |
-| **v3.3.0** | **5965 ms** | Discovery | Minor parser + check tweaks |
-| **v3.6.0** | **5961 ms** | Discovery | Same shape, cleaner logging |
-| **v4.0.0** | **7989 ms** | **Coverage** | **+34% slower** — added 6 external DBs, Keystone, Snow Core, Bloxlink, per-ID historical scans |
-| **v4.5.0** | **1721 ms** | **Optimization** | Caching + partial parallelization. **−78% vs v4.0.0** |
-| **v5.0.0 live** | **801 ms** | **Optimization** | Domain racing, wave-based T2, adaptive limiter. **−53% vs v4.5.0** |
-| **v5.0.0 preemptive** | **65 ms** | **Revolution** | Background scan on typing. **−92% vs v5.0.0 live** |
-
-### The full picture — every version, same scale
-
-```mermaid
-gantt
-    title "Every version on the same 8-second scale"
-    dateFormat x
-    axisFormat %L ms
-    todayMarker off
-
-    section v2.1.0
-    Full BGC             :done, a1, 0, 6000ms
-
-    section v3.3.0
-    Full BGC             :done, a2, 0, 5965ms
-
-    section v3.6.0
-    Full BGC             :done, a3, 0, 5961ms
-
-    section v4.0.0
-    Full BGC (more work):crit, done, a4, 0, 7989ms
-
-    section v4.5.0
-    Full BGC             :done, a5, 0, 1721ms
-
-    section v5.0.0 live
-    Full BGC             :crit, done, a6, 0, 801ms
-
-    section v5.0.0 preemptive
-    Full BGC             :crit, done, a7, 0, 65ms
-```
-
----
-
-## 🗓️ The three eras
-
-The version history isn't just a timeline — it's a story in three acts. Each era had a *different* primary goal.
-
-```mermaid
-pie title "Time spent in each era"
-    "Discovery (v2–v3)" : 2
-    "Coverage (v4.0)" : 1
-    "Optimization (v4.5–v5.0)" : 2
-    "Revolution (preemptive)" : 1
-```
-
-### Era 1: Discovery (v2.1.0 → v3.6.0) — ~6 seconds
-
-**Goal:** make the checks work at all.
-
-The bot did exactly what you'd naively write:
-- Look up the Roblox username (sequential domain fallback)
-- Fetch their info (sequential)
-- Fetch their groups (sequential)
-- Call Xtracker registry (sequential, no rate limit)
-- Call Xtracker ownership (sequential, no rate limit)
-- Call Roblox Watcher (sequential)
-- Call Exploit Watcher (sequential)
-- Call Clanware (sequential, full banlist download)
-- Read the one blacklist sheet (sequential)
-
-**Every check waited for the one before it.** Nine HTTP requests, each paying its own TLS handshake, each waiting its turn. No caching between runs. No parallelization. About 6 seconds total was simply *what you got*.
-
-The v2.1.0 code literally has this shape:
-
-```python
-info, info_err = await info_task
-blacklist, bl_err = await black_task
-# ... then gather of 6 API calls
-results = await asyncio.gather(*api_coros, return_exceptions=True)
-```
-
-Better than pure sequential, but *upstream* of that gather was another sequential chain — info → groups → blacklist read → gather.
-
-### Era 2: Coverage (v4.0.0) — 7989 ms
-
-**Goal:** search everything.
-
-v4.0.0 added huge new coverage:
-- **6 external clan blacklists** (Imperial Armada, Dragonborn, SURGE, SOL ×2, BB:PC) — ~6100 rows total
-- **Keystone** — 2252 cases
-- **Snow Core** — 1769 active bans
-- **Bloxlink** — resolves Discord → Roblox ID
-- **Per-ID historical scans** — every historical Roblox ID gets Xtracker + Simmer + Snow Core
-
-Naturally, all this new work made the bot *slower*. From 5961 ms → **7989 ms** — a 34% increase. But this was the right trade — the bot was now catching bans that were physically impossible to catch before.
+The version bar chart above compresses the later versions into short bars. The same data on a smaller scale:
 
 ```mermaid
 xychart-beta
-    title "v3.6.0 → v4.0.0: coverage expanded, time went up"
-    x-axis ["v3.6.0", "v4.0.0"]
-    y-axis "Milliseconds" 0 --> 8500
-    bar [5961, 7989]
+    title "v4.5.0 and later — same data, smaller scale"
+    x-axis ["v4.5.0 live", "v5.0.0 live", "v5.0.0 preemptive"]
+    y-axis "Milliseconds" 0 --> 1800
+    bar [1721, 801, 65]
 ```
-
-### Era 3: Optimization (v4.5.0 → v5.0.0) — 1721 → 801 → 65 ms
-
-**Goal:** make all that coverage *fast*.
-
-Three waves of optimization:
-
-**Wave 1 — v4.5.0: Cache + partial parallelization**
-- Cached blacklists, Keystone, Snow Core (5-minute TTL)
-- Cached per-UID info, history, groups
-- Made T0 (Discord-level) checks fire in parallel with T1 (Roblox-level)
-
-**7989 → 1721 ms — 4.6× faster**
-
-**Wave 2 — v5.0.0 live: Racing + waves + adaptive limiter**
-- **Domain racing** — 3 Roblox mirrors raced in parallel per request
-- **Wave-based T2** — identity-set checks fire in fast/blox/rem waves
-- **Adaptive rate limiter** — Xtracker self-tunes on 429s
-- **`aiodns`** — non-blocking DNS resolution
-
-**1721 → 801 ms — 2.15× faster**
-
-**Wave 3 — v5.0.0 preemptive: The background scan**
-- **`on_typing` fires a pre-scan** the moment a user starts typing
-- All expensive lookups cached with **three-tier TTL** (identity 7d, Xtracker 3d, freshness 30m)
-- When they post, the BGC reads from cache instead of doing network
-
-**801 → 65 ms — 12.3× faster**
-
-### Cumulative
-
-| Era | Version | Time | Speedup from previous |
-| :--- | :--- | ---: | ---: |
-| Discovery baseline | v3.6.0 | 5961 ms | — |
-| Coverage expansion | v4.0.0 | 7989 ms | **0.75× (slower — on purpose)** |
-| Cache + partial parallel | v4.5.0 | 1721 ms | **4.64×** |
-| Racing + waves | v5.0.0 live | 801 ms | **2.15×** |
-| Preemptive | v5.0.0 preempt | 65 ms | **12.3×** |
-
-**Cumulative from v4.0.0 peak: 123× faster.** From v3.6.0 (before coverage expansion): **92× faster** while searching **8× more databases**.
 
 ---
 
-## 🔍 What we actually search
+## What the bot checks
 
-This is the "show your work" section. Every check, every source, every mirror.
+The bot queries 15 distinct data sources per application: 9 list-based sources (Google Sheets and one Keystone API returning a list of cases) plus 6 per-ID API lookups.
 
-### Everything the bot queries per application
+### Data sources by category
 
 ```mermaid
 flowchart LR
-    A["📨 Application"] --> B["🎮 Roblox API<br/>3 mirrors raced"]
-    A --> C["🛡️ Xtracker<br/>registry + ownership"]
-    A --> D["❄️ Snow Core<br/>1769 entries"]
-    A --> E["🛡️ Keystone<br/>2252 cases"]
-    A --> F["🕵️ Simmer RAB"]
-    A --> G["👁️ Roblox Watcher<br/>NSFW server check"]
-    A --> H["🕵️ Exploit Watcher<br/>informational"]
-    A --> I["📋 Your blacklist<br/>users + groups"]
-    A --> J["🗄️ 6 external DBs<br/>~6100 records"]
-    A --> K["🔗 Bloxlink<br/>Discord ↔ Roblox"]
+    A["Application"]
 
-    style A fill:#8b5cf6,color:#fff
-    style J fill:#22c55e,color:#fff
-    style E fill:#22c55e,color:#fff
-    style C fill:#f59e0b,color:#fff
-```
-
-### Coverage by source — the raw numbers
-
-| Source | What it is | Rows | Checked | Since |
-| :--- | :--- | ---: | :---: | :--- |
-| **Roblox API** | User info, history, groups | ∞ | 4 endpoints × 3 mirrors | v2.1.0 |
-| **Xtracker** | Shared cheater registry | — | 2 endpoints × N IDs | v2.1.0 |
-| **Your user blacklist** | Private ban list | *(your sheet)* | 1 row per applicant | v2.1.0 |
-| **Roblox Watcher** | NSFW/condo server membership | — | 1 lookup | v2.1.0 |
-| **Exploit Watcher** | Exploit flag (informational) | — | 1 lookup | v2.1.0 |
-| **Clanware** | External justice DB | — | *(removed)* | v2.1.0 |
-| **Snow Core** | External punishment list | **1769** | Every ID | v4.0.0 |
-| **Keystone** | Shared case database | **2252** | Every ID + name | v4.0.0 |
-| **Imperial Armada Blacklist** | External clan | **424** | Every ID + name | v4.0.0 |
-| **Dragonborn Blacklist** | External clan | **2810** | Every ID + name | v4.0.0 |
-| **SURGE Mainframe** | External clan | **634** | Every ID + name | v4.0.0 |
-| **SOL Blacklists** | External clan | **270** | Every ID + name | v4.0.0 |
-| **SOL Base Banlist** | External clan | **204** | Every ID + name | v4.0.0 |
-| **BB:PC Punishment Tracker** | External clan | **41** | Every ID + name | v4.0.0 |
-| **Bloxlink** | Discord → Roblox resolver | ∞ | 1 lookup | v4.0.0 |
-| **Simmer** | RAB activity flags | — | 1 per ID | v4.9.0 |
-
-**Total records searched per application: ~7,400** (across 8 ban databases) plus unlimited results from Xtracker, Roblox API, Bloxlink, and the two watchers.
-
-### What each check actually does
-
-```mermaid
-flowchart TD
-    subgraph Roblox["🎮 Roblox API (3 mirrors raced)"]
-        R1["/v1/usernames/users<br/>username → ID"]
-        R2["/v1/users/{id}<br/>info + isBanned + created"]
-        R3["/v1/users/{id}/username-history<br/>past names"]
-        R4["/v1/users/{id}/groups/roles<br/>group memberships"]
+    subgraph Roblox["🎮 Roblox API"]
+        R1["3 mirrors raced<br/>info + history + groups"]
     end
 
     subgraph Cheat["🛡️ Cheater databases"]
-        C1["Xtracker registry/user"]
-        C2["Xtracker ownership/user"]
-        C3["Keystone case scan"]
+        C1["Xtracker<br/>registry + ownership"]
+        C2["Keystone<br/>2,252 cases"]
     end
 
-    subgraph Comms["🕵️ Community sources"]
-        W1["Roblox Watcher<br/>NSFW server check"]
-        W2["Exploit Watcher<br/>informational flag"]
-        S1["Simmer RAB"]
-        S2["Snow Core"]
+    subgraph Community["🕵️ Community"]
+        W1["Roblox Watcher"]
+        W2["Exploit Watcher<br/>(informational)"]
+        W3["Simmer RAB"]
+        W4["Snow Core<br/>1,769 entries"]
     end
 
     subgraph Lists["📋 Ban lists"]
-        B1["User blacklist"]
-        B2["Group blacklist"]
-        B3["6 external clan sheets<br/>~6100 records"]
+        B1["User + group blacklists<br/>(your own sheet)"]
+        B2["6 external clan sheets<br/>4,383 records"]
     end
 
-    A["Application"] --> Roblox
+    subgraph Identity["🔗 Identity"]
+        I1["Bloxlink"]
+    end
+
+    A --> Roblox
     A --> Cheat
-    A --> Comms
+    A --> Community
     A --> Lists
-    A --> BL["🔗 Bloxlink"]
-
-    style Roblox fill:#5865F2,color:#fff
-    style Cheat fill:#f59e0b,color:#fff
-    style Comms fill:#22c55e,color:#fff
-    style Lists fill:#ef4444,color:#fff
-    style BL fill:#8b5cf6,color:#fff
+    A --> Identity
 ```
 
-### Domains we hit — the full list
+### Records available per source
+
+Sorted by record count. The eight figures below total **8,404 rows across 8 sources**, measured in one `/health check` run. User and group blacklists are config-dependent and excluded from this chart.
 
 ```mermaid
-flowchart LR
-    subgraph Mirrors["3-mirror races"]
-        M1["users.rotunnel.com"]
-        M2["users.roproxy.com"]
-        M3["users.roblox.com"]
-        M4["groups.rotunnel.com"]
-        M5["groups.roproxy.com"]
-        M6["groups.roblox.com"]
-    end
-
-    subgraph Direct["Direct calls"]
-        D1["api.blox.link"]
-        D2["api.xtracker.xyz"]
-        D3["api.keystone-swords.com"]
-        D4["api.simmer.icu"]
-        D5["api.robloxwatcher.com"]
-        D6["docs.google.com"]
-    end
-
-    style M1 fill:#22c55e,color:#fff
-    style M2 fill:#f59e0b,color:#fff
-    style M3 fill:#ef4444,color:#fff
+xychart-beta
+    title "Records per source (list-based checks)"
+    x-axis ["Dragonborn", "Keystone", "Snow Core", "SURGE", "Imp. Armada", "SOL Blacklist", "SOL Base", "BB:PC"]
+    y-axis "Records" 0 --> 3000
+    bar [2810, 2252, 1769, 634, 424, 270, 204, 41]
 ```
 
-Every Roblox API call races **three mirrors** in parallel and takes the first 200 response. If one mirror fails 3 times in a row, the circuit breaker skips it for 60 seconds.
+| Source | Records | Type |
+| :--- | ---: | :--- |
+| Dragonborn Blacklist | 2,810 | External clan (Google Sheet) |
+| Keystone | 2,252 | Shared case database (API) |
+| Snow Core | 1,769 | External community (Google Sheet) |
+| SURGE Mainframes | 634 | External clan (Google Sheet) |
+| Imperial Armada Blacklist | 424 | External clan (Google Sheet) |
+| SOL Blacklists | 270 | External clan (Google Sheet) |
+| SOL Base Banlist | 204 | External clan (Google Sheet) |
+| BB:PC Punishment Tracker | 41 | External clan (Google Sheet) |
+| **Total** | **8,404** | |
+
+> Record counts are from a single health check and will drift as sheets are edited. They are row counts, not unique applicants — the same person may appear in multiple sources.
+
+### Per-ID API checks
+
+These have no fixed record count — they return a result for the specific applicant being checked:
+
+| Source | What it returns | Check frequency |
+| :--- | :--- | :--- |
+| Roblox API | User info, banned status, created date, username history, groups | Once per unique Roblox ID |
+| Xtracker (registry + ownership) | Cheater registry listing | 2 calls per unique Roblox ID |
+| Bloxlink | Discord → Roblox ID resolution | Once per application |
+| Roblox Watcher | NSFW/condo server membership | Once per Discord ID |
+| Exploit Watcher | Exploit flag (informational only, does not fail) | Once per Discord ID |
+| Simmer | RAB (Roblox Studio) activity | Once per unique Roblox ID |
 
 ---
 
-## ⚖️ Speed vs coverage tradeoff
+## Request lifecycle
 
-This is the most interesting thing about the version history. Every version made a deliberate choice:
+How a single application flows through the bot from message to reaction.
 
 ```mermaid
-quadrantChart
-    title Coverage vs Speed (lower-right is better)
-    x-axis "Slower" --> "Faster"
-    y-axis "Less coverage" --> "More coverage"
-    quadrant-1 "Ideal"
-    quadrant-2 "Slow but thorough"
-    quadrant-3 "Fast but shallow"
-    quadrant-4 "Pointless"
-    "v2.1.0": [0.10, 0.30]
-    "v3.3.0": [0.11, 0.35]
-    "v3.6.0": [0.11, 0.35]
-    "v4.0.0": [0.01, 0.95]
-    "v4.5.0": [0.60, 0.95]
-    "v5.0.0 live": [0.90, 0.95]
-    "v5.0.0 preempt": [0.99, 0.95]
+flowchart TD
+    A["Message in recruitment channel"] --> B{"Privileged member<br/>or format template?"}
+    B -->|"yes"| Z["Ignore"]
+    B -->|"no"| C["Parse recruitment message"]
+    C --> D{"Missing required fields?"}
+    D -->|"yes"| E["❌ Reply + fail log"]
+    D -->|"no"| F["Look up preemptive cache"]
+
+    F --> G{"Cache hit?"}
+    G -->|"yes"| H["🏎️ Fast path"]
+    G -->|"no"| I["🐢 Live path"]
+
+    H --> J["Fire T0 watchers"]
+    H --> K["Fire T2 wave<br/>from cached identity"]
+
+    I --> L["Fire T0 in parallel<br/>bloxlink + typed + nickname"]
+    L --> M["Fire T1 as soon as<br/>first Roblox ID resolves"]
+    M --> N["Fire T2 as soon as<br/>history resolves"]
+
+    J --> O["Combine all results"]
+    K --> O
+    N --> O
+
+    O --> P{"Any check returned HIT?"}
+    P -->|"yes"| Q["❌ react + sanitized reply<br/>+ fail log"]
+    P -->|"no"| R["✅ react + auto-role<br/>+ acceptance DM + pass log"]
 ```
 
-**Reading this chart:**
-- **v2.1.0 / v3.x** — sitting in the "slow and shallow" corner. Cheap checks, few sources, but takes 6 seconds.
-- **v4.0.0** — jumped straight up to full coverage, but paid for it with the slowest time ever recorded.
-- **v4.5.0 → v5.0.0 preemptive** — moved steadily right, keeping the same coverage. Final position: **full coverage at 65 ms**.
-
-The preemptive fast path is the only position on the chart with both maximum coverage **and** maximum speed. That's why it's a game-changer.
+The fast path fires fewer tasks because most of T1 was already collected by the preemptive scan. The live path fires everything live.
 
 ---
 
-## 📉 v5.0.0 in two Gantts
+## Cache lifecycle
 
-### Live path — 801 ms (preemptive bypassed)
+The preemptive scanner runs when a user starts typing in the recruitment channel, populating three independent caches that the live check can reuse.
 
-Every task from `t=0` to `t=801`. This is what a user sees when they post *without* having been pre-scanned.
+```mermaid
+flowchart TD
+    A["TYPING_START event"] --> B{"Already scanning<br/>this user?"}
+    B -->|"yes"| Z["Skip"]
+    B -->|"no"| C["Load existing cache row"]
+    C --> D{"Which tiers are stale?"}
+
+    D --> E["Identity tier<br/>(7 days)"]
+    D --> F["Xtracker tier<br/>(3 days)"]
+    D --> G["Freshness tier<br/>(30 minutes)"]
+
+    E --> H["Fire Bloxlink + nickname<br/>in parallel"]
+    H --> I["Fetch Roblox info + history<br/>for primary ID"]
+    I --> J["💾 Save identity tier"]
+
+    F --> K["Collect all known IDs<br/>(bloxlink + nickname + cached + DB history)"]
+    K --> L["Fire Xtracker reg + own<br/>for every ID"]
+    L --> M["💾 Save Xtracker tier"]
+
+    G --> N["Fetch Roblox groups + Simmer RAB"]
+    N --> O["💾 Save freshness tier"]
+
+    J --> P["Cache populated"]
+    M --> P
+    O --> P
+    P --> Q["Later: application submitted"]
+    Q --> R["_preemptive_lookup() returns<br/>only the tiers that are still fresh"]
+```
+
+### Cache tiers
+
+| Tier | Contents | TTL | Refreshed when |
+| :--- | :--- | ---: | :--- |
+| **Identity** | Bloxlink → Roblox ID, user info, username history | 7 days | `on_typing` if identity is stale |
+| **Xtracker** | Registry + ownership results for every known Roblox ID | 3 days | `on_typing` if Xtracker is stale |
+| **Freshness** | Roblox group memberships, Simmer RAB flag | 30 minutes | `on_typing` if freshness is stale |
+
+Each tier expires independently. A user who reapplies after two days gets identity + Xtracker cache hits but a fresh groups check. A user who reapplies after ten days gets a full re-scan.
+
+**When the preemptive path does not apply:**
+
+- The user submits the application before the preemptive scan finishes (typical for very fast typers, under ~3 seconds)
+- The preemptive scan failed (network error, API down)
+- `skip_preemptive=True` is passed explicitly (used by `/check`, `/health timeline`, and re-runs)
+- The applicant has no Discord member object cached (e.g. first message with a stale member cache)
+
+In all of these cases the bot falls back to the live path automatically.
+
+---
+
+## v5.0.0 runtime breakdown
+
+Two single-run measurements, broken down by task. These show which tasks run in parallel and which one determined the total.
+
+### Live path — 801 ms
 
 ```mermaid
 gantt
-    title "v5.0.0 Live — 801 ms"
+    title "v5.0.0 live path — 801 ms"
     dateFormat x
     axisFormat %L ms
     todayMarker off
 
-    section T0 (Discord-level)
-    bloxlink (ceiling)     :crit, done, b, 0, 801ms
+    section T0 — Discord-level
+    bloxlink               :crit, done, b, 0, 801ms
     exploit_watcher        :done,        e, 0, 141ms
     roblox_watcher         :done,        r, 0, 89ms
     blacklists + age       :done,        x, 0, 1ms
 
-    section T1 (Roblox-ID)
+    section T1 — Roblox-ID-level
     xtracker_own           :done,        o, 1, 586ms
     xtracker_reg           :done,        g, 1, 248ms
     simmer_rab             :done,        s, 1, 136ms
@@ -376,17 +257,19 @@ gantt
     user_groups            :done,        u, 1, 53ms
     user_info              :done,        i, 1, 26ms
 
-    section T2 (identity-set)
+    section T2 — Identity-set
     keystone + ext + multi :done,        t, 54, 6ms
 ```
 
-### Preemptive fast path — 65 ms
+**Where the 801 ms went.** In this measurement, `bloxlink` was the last task to complete at 800.5 ms. `xtracker_own` — the second-slowest — finished at 587.2 ms, 213 ms earlier. Total runtime is the duration of the single slowest task, not the sum of all tasks. If `bloxlink` had finished at 587 ms, total runtime would have been approximately 587 ms.
 
-Every task that runs when the preemptive cache is warm. Only two network calls remain.
+**What 801 ms does not mean.** The Bloxlink hard timeout is configured at **1500 ms** (`BLOXLINK_HARD_TIMEOUT_MS`). The 801 ms in this chart is an *observed duration in this specific run*, not the ceiling. On a slower Bloxlink response, the shield would fire at 1500 ms and the bot would fall back to the typed username.
+
+### Preemptive path — 65 ms
 
 ```mermaid
 gantt
-    title "v5.0.0 Preemptive — 65 ms"
+    title "v5.0.0 preemptive path — 65 ms"
     dateFormat x
     axisFormat %L ms
     todayMarker off
@@ -394,231 +277,286 @@ gantt
     section Preemptive cache
     identity + xtracker + freshness :done, p, 0, 1ms
 
-    section T0 (only network left)
+    section T0 — remaining network calls
     exploit_watcher (ceiling)       :crit, done, e, 0, 65ms
     roblox_watcher                  :done,        r, 0, 57ms
     blacklists + age                :done,        b, 0, 1ms
 
-    section T1 (all cached)
-    info + hist + groups            :done,        i, 0, 1ms
-    xtracker (0 network calls)      :done,        x, 0, 1ms
+    section T1 — all served from cache
+    info + history + groups         :done,        i, 0, 1ms
+    xtracker (zero network calls)   :done,        x, 0, 1ms
     simmer + snow                   :done,        s, 0, 1ms
 
     section T2
     keystone + ext + multi          :done,        t, 1, 7ms
 ```
 
-**The story:** `exploit_watcher` is the only remaining network call. Everything else — every Roblox API call, every Xtracker check, every Keystone scan, every external DB lookup — is served from the preemptive cache. The preemptive scan already did the expensive work (~3300 ms) while the user was typing.
+**Where the 65 ms went.** `exploit_watcher` was the last task to complete at 64.6 ms. `roblox_watcher` finished at 57.4 ms. Every other task completed in under 2 ms because it was served from the preemptive cache.
+
+**What 65 ms does not include.** The preemptive scan that populated the cache took approximately **3,306 ms** in the same session. That scan ran while the user was typing, before they submitted. The 65 ms is the marginal work after cache hit — not the total work to process the application.
+
+**What happens without the preemptive cache.** If the same user had submitted without a preemptive scan, the same application would have run through the live path and taken ~800 ms. The 65 ms figure depends on cache hit.
+
+### Where the two paths differ
+
+| Task | Live path | Preemptive path |
+| :--- | :---: | :---: |
+| Bloxlink | 🔴 801 ms (network) | ⚪ Cached |
+| Xtracker (registry + ownership) | 🔴 834 ms (2 calls, 0.4s limiter) | ⚪ Cached |
+| Roblox info + history + groups | 🔴 132 ms (3 network calls) | ⚪ Cached |
+| Simmer RAB | 🔴 136 ms (network) | ⚪ Cached |
+| Keystone | 🟢 ~6 ms (cached list) | 🟢 ~6 ms |
+| 6 external DBs | 🟢 ~6 ms (cached records) | 🟢 ~6 ms |
+| Roblox Watcher | 🟡 89 ms (network, always live) | 🟡 57 ms |
+| Exploit Watcher | 🟡 141 ms (network, always live) | 🟡 65 ms |
+
+Roblox Watcher and Exploit Watcher are always live because the preemptive scan does not cache Discord-ID-based watcher lookups. Caching them is on the roadmap.
 
 ---
 
-## 🏛️ How we got here — code archaeology
+## Reliability
 
-Side-by-side, here's how the shape of the code changed between eras.
+Four independent mechanisms limit the impact of slow or failing external services.
 
-### v2.1.0 — sequential everything
+### Domain circuit breaker
 
-```python
-# Every check waited for the one before it
-user, lookup_err = await roblox_user_lookup(session, parsed["roblox_username"])
-info, info_err = await roblox_user_info(session, roblox_id)
-blacklist, bl_err = await get_blacklist(session)
+Every Roblox API call races three mirrors (`users.rotunnel.com`, `users.roproxy.com`, `users.roblox.com`). If a mirror fails 3 times in a row, it is skipped for 60 seconds.
 
-# A small async.gather at the very end
-api_coros = [
-    xtracker_check(session, "registry/user", roblox_id),
-    xtracker_check(session, "ownership/user", roblox_id),
-    watcher_check(session, message.author.id, RW_API_KEY, "robloxwatcher"),
-    watcher_check(session, message.author.id, EW_API_KEY, "exploitwatcher"),
-    clanware_check(session, roblox_id),
-]
-results = await asyncio.gather(*api_coros, return_exceptions=True)
+```mermaid
+flowchart LR
+    A["Request"] --> B{"Mirror healthy?"}
+    B -->|"yes"| C["Race with others"]
+    B -->|"no"| D["Skip this mirror"]
+    C --> E{"200 OK?"}
+    E -->|"yes"| F["Reset error count"]
+    E -->|"no"| G["error_count++"]
+    G --> H{"≥ 3 errors?"}
+    H -->|"yes"| I["Skip for 60 seconds"]
+    H -->|"no"| D
 ```
 
-**Characteristics:**
-- No caching
-- No domain racing (sequential mirror fallback)
-- No wave-based T2
-- No rate limiting (would 429 under load)
-- No preemptive scan
-- One blacklist sheet only
+### Bloxlink shield
 
-### v4.0.0 — coverage expansion
+Bloxlink is capped at 1500 ms. A late response is not wasted — if the call eventually returns after the timeout, the result is stored in a late cache for 5 minutes and used by the next application from the same user.
 
-```python
-# User blacklist read early
-user_bl_entries, ub_err = await get_user_blacklist(session, force_refresh=force_blacklist_refresh)
-
-# Caching added
-async with bot.group_blacklist_lock:
-    cached, ts = bot.group_blacklist_cache
-    if cached is not None and now - ts < BLACKLIST_TTL:
-        return cached, None
-
-# 6 external DBs searched via gviz
-ext_result = await search_external_dbs(session, {
-    "rbx_ids": all_rbx_ids,
-    "rbx_usernames": all_rbx_names,
-    "discord_ids": all_discord_ids,
-    "discord_usernames": dc_names,
-}, force_refresh=force_blacklist_refresh)
-
-# Big gather at end
-primary_tasks = {"keystone": keystone_check(...)}
-for rid in all_rbx_ids:
-    primary_tasks[f"xtracker_reg_{rid}"] = xtracker_check(...)
-    primary_tasks[f"xtracker_own_{rid}"] = xtracker_check(...)
-    primary_tasks[f"simmer_rab_{rid}"] = simmer_rab_check(...)
-    primary_tasks[f"snow_{rid}"] = snow_core_check(...)
+```mermaid
+flowchart TD
+    A["Bloxlink call"] --> B["wait_for(shielded, 1500ms)"]
+    B --> C{"Resolved<br/>before 1500ms?"}
+    C -->|"yes"| D["Use real result"]
+    C -->|"no"| E["status = hard_timeout<br/>fall back to typed username"]
+    E --> F["Attach done callback"]
+    F --> G{"Call eventually<br/>returns?"}
+    G -->|"yes"| H["Store in late cache<br/>(5 minute TTL)"]
+    G -->|"no"| I["Discard"]
+    H --> J["Next application<br/>uses cached result"]
 ```
 
-**What changed:**
-- ✅ Added 6 external DBs, Keystone, Snow Core, Bloxlink
-- ✅ Added per-UID caching with TTL
-- ✅ Added per-ID historical scans
-- ✅ Wide parallel `gather` of all primary tasks
-- ❌ Sequential domain fallback (rotunnel → roproxy → roblox)
-- ❌ T2 fires as one big wave, waits for all T0
-- ❌ No rate limiter on Xtracker (would 429)
-- ❌ Slower than v3.6.0 because of all the new work
+### Adaptive Xtracker rate limiter
 
-### v5.0.0 — racing + waves + preemptive
+The Xtracker rate limiter starts at 1.0 second between calls. On HTTP 429 responses it doubles the interval up to 4× (max 4.0 seconds). After 60 seconds without a 429, the interval decays back toward 1.0 second.
 
-```python
-# Preemptive lookup — 3-tier cache
-preemptive = await _preemptive_lookup(discord_id, guild_id)
-have_preemptive_id = bool(preemptive and preemptive.get("blox_id") and preemptive.get("id_fresh"))
-
-# Domain racing — 3 mirrors parallel, first 200 wins
-async def _race_200(session, domains, path, *, timeout=10.0):
-    tasks = [asyncio.create_task(_try(d)) for d in domains]
-    for fut in asyncio.as_completed(tasks):
-        kind, val, domain, err = await fut
-        if kind == "ok":
-            for t in tasks:
-                if not t.done(): t.cancel()
-            return val, None, domain, False
-
-# Wave-based T2
-_fire_t2(fast_ids, fast_names, "fast")  # fires at 54ms
-_fire_t2(delta_ids, blox_delta_names, "blox")  # fires only if delta
-_fire_t2(remaining_ids, remaining_names, "rem")  # fires only if delta
-
-# Adaptive rate limiter
-class AdaptiveRateLimiter:
-    def report_429(self):
-        self._consecutive_429s += 1
-        mult = min(2 ** self._consecutive_429s, self.max_multiplier)
-        self.interval = self.base * mult
+```mermaid
+stateDiagram-v2
+    [*] --> Fresh : startup
+    Fresh --> Backoff1 : 429 received
+    Backoff1 --> Backoff2 : 429 received
+    Backoff2 --> Max : 429 received
+    Max --> Max : 429 received
+    Backoff1 --> Fresh : 60s quiet
+    Backoff2 --> Backoff1 : 60s quiet
+    Max --> Backoff2 : 60s quiet
+    note right of Fresh
+        1.0s interval
+    end note
+    note right of Backoff1
+        2.0s interval
+    end note
+    note right of Backoff2
+        4.0s interval
+    end note
+    note right of Max
+        Capped at 4× base
+    end note
 ```
 
-**What changed:**
-- ✅ Domain racing — `typed_lookup` from 184 ms → 1 ms (cached) or ~114 ms (cold)
-- ✅ Wave-based T2 — T2 fires at 54 ms instead of 1107 ms
-- ✅ Adaptive rate limiter — self-tunes on 429s
-- ✅ Preemptive scanner — 65 ms fast path for typing users
-- ✅ Bloxlink shield — 1500 ms hard cap with late-cache
-- ✅ `aiodns` — non-blocking DNS
-- ✅ Three-tier TTL cache — identity 7d, Xtracker 3d, freshness 30m
+### Failure handling summary
 
-### The evolution in one table
+| Failure type | Handler | User impact |
+| :--- | :--- | :--- |
+| Single mirror timeout | Circuit breaker skips it | None (other 2 mirrors raced) |
+| All 3 mirrors fail | Retry with backoff | Check returns SKIPPED |
+| Bloxlink timeout (>1500 ms) | Fall back to typed username | Slower resolution, still works |
+| Xtracker 429 | Adaptive limiter bumps interval | Slightly slower calls, no 429s |
+| Google Sheets 500 | Per-source error isolation | Other DBs still searched |
+| Keystone down | Check returns ERROR, does not fail applicant | Applicant passes if no other HIT |
+| Simmer down | SKIPPED (does not fail applicant) | Same |
+| Roblox Watcher down | SKIPPED | Same |
+| SQLite lock contention | Serialized via `db_lock` | No data loss, slower writes |
+
+---
+
+## Implementation history
+
+The changes between versions, grouped by what motivated them.
+
+### v2.1.0 → v3.6.0: initial working version
+
+The bot did eight checks in sequence: Roblox lookup, user info, groups, Xtracker registry, Xtracker ownership, two watchers, Clanware banlist. One blacklist sheet.
+
+- Fully sequential — every check waited for the previous
+- No caching between applications
+- No rate limiting on Xtracker (would 429 under load)
+- No domain racing — sequential mirror fallback (could take 15+ seconds per API call)
+
+Runtime: ~6 seconds.
+
+### v4.0.0: coverage expansion
+
+Added six new data sources and a Discord → Roblox resolver:
+
+- Six external clan blacklists (Imperial Armada, Dragonborn, SURGE, SOL ×2, BB:PC) — 4,383 records total
+- Keystone (2,252 cases)
+- Snow Core (1,769 records)
+- Bloxlink for Discord → Roblox identity
+- Per-ID Xtracker + Simmer + Snow Core lookups for **historical** Roblox IDs (not just current)
+
+Also added caching for blacklists, Keystone, Snow Core, and per-UID Roblox info/history/groups. But the additional network calls more than offset the caching gains.
+
+Runtime: 7,989 ms — slower than v3.6.0 by 34%, but now checking 8 databases instead of 1.
+
+### v4.5.0: first optimization pass
+
+- Cached shared sources (blacklists, Keystone, Snow Core) with 5-minute TTL
+- Fired the top-level checks in parallel instead of sequentially
+- Added basic `aiohttp` connection pooling
+
+Runtime: 1,721 ms. **4.6× faster than v4.0.0.**
+
+### v5.0.0: racing, waves, and preemptive scanning
+
+Three structural changes:
+
+**Domain racing.** Every Roblox API call now races three mirrors in parallel and takes the first 200 response. Previously it tried them sequentially until one worked. Racing reduced `typed_lookup` from 492 ms (v4.5.0) to 114 ms (v5.0.0 live) to ~1 ms (v5.0.0 preemptive, cached).
+
+**Wave-based T2.** Identity-set checks (Keystone, external DBs, multi-account) fire as soon as the primary identity is known, rather than waiting for all of T0 (including Bloxlink) to finish. This moved T2 firing from t=1107 ms to t=54 ms on the live path.
+
+**Preemptive scanning.** When a user starts typing in the recruitment channel, the bot kicks off the expensive lookups in the background using three tiers of caching. When they submit, the check reuses whatever tiers are still fresh.
+
+Also added:
+
+- `AdaptiveRateLimiter` for Xtracker (bumps on 429, decays on silence)
+- Bloxlink shield (1500 ms hard cap) with late-cache for eventual responses
+- Domain circuit breaker
+- `aiodns` non-blocking DNS resolution
+- Three-tier cache split (identity 7d, Xtracker 3d, freshness 30m)
+
+Runtime (live path): 801 ms. **2.15× faster than v4.5.0.**
+Runtime (preemptive path): 65 ms — *but only after a ~3,300 ms background scan that ran before submission.*
+
+### Feature evolution matrix
 
 | Feature | v2.1.0 | v3.6.0 | v4.0.0 | v4.5.0 | v5.0.0 |
 | :--- | :---: | :---: | :---: | :---: | :---: |
-| Domain racing (3 mirrors) | ❌ | ❌ | ❌ | ❌ | ✅ |
-| Per-UID cache | ❌ | ❌ | ✅ | ✅ | ✅ |
-| Three-tier TTL | ❌ | ❌ | ❌ | ❌ | ✅ |
+| Domain racing | ❌ | ❌ | ❌ | ❌ | ✅ |
+| Per-UID caching | ❌ | ❌ | ✅ | ✅ | ✅ |
+| Three-tier cache | ❌ | ❌ | ❌ | ❌ | ✅ |
 | Bloxlink identity | ❌ | ❌ | ✅ | ✅ | ✅ |
 | Bloxlink hard timeout | ❌ | ❌ | ❌ | ❌ | ✅ |
-| External DBs (6) | ❌ | ❌ | ✅ | ✅ | ✅ |
+| Six external DBs | ❌ | ❌ | ✅ | ✅ | ✅ |
 | Keystone | ❌ | ❌ | ✅ | ✅ | ✅ |
 | Snow Core | ❌ | ❌ | ✅ | ✅ | ✅ |
+| Historical ID checks | ❌ | ❌ | ✅ | ✅ | ✅ |
 | Wave-based T2 | ❌ | ❌ | ❌ | ❌ | ✅ |
 | Adaptive rate limiter | ❌ | ❌ | ❌ | ❌ | ✅ |
 | Preemptive scanner | ❌ | ❌ | ❌ | ❌ | ✅ |
 | Circuit breaker | ❌ | ❌ | ❌ | ❌ | ✅ |
-| aiodns | ❌ | ❌ | ❌ | ❌ | ✅ |
-| **Total time** | **~6000** | **5961** | **7989** | **1721** | **65** |
+| `aiodns` support | ❌ | ❌ | ❌ | ❌ | ✅ |
 
 ---
 
-## 🛡️ Reliability
-
-Four independent safety layers:
-
-### 1. Domain circuit breaker
-
-3 failures on any Roblox mirror → skip it for 60 s → auto-recover.
-
-```mermaid
-flowchart LR
-    A["request to domain"] --> B{"healthy?"}
-    B -->|"yes"| C["race normally"]
-    B -->|"no"| D["skip (dead until ts)"]
-    C --> E{"success?"}
-    E -->|"yes"| F["reset error count"]
-    E -->|"no"| G["error_count++"]
-    G --> H{"≥ 3?"}
-    H -->|"yes"| I["skip 60s"]
-```
-
-### 2. Bloxlink shield
-
-Hard cap at 1500 ms. If Bloxlink is slow, falls back to typed username. The late result is still captured and cached for the next application.
-
-### 3. Adaptive Xtracker limiter
-
-Base 1.0 s → doubles on 429 (max 4×) → decays back after 60 s of silence.
-
-| State | Interval |
-| :--- | ---: |
-| Fresh | 1.00 s |
-| 1× 429 | 2.00 s |
-| 2× 429 | 4.00 s |
-| 60 s quiet | decays back to 1.00 s |
-
-### 4. Failure matrix
-
-| Failure | Handler | Impact |
-| :--- | :--- | :--- |
-| Xtracker 429 | Adaptive limiter | Self-corrects, no user impact |
-| Bloxlink > 1500 ms | Shield + late cache | Falls back to typed username |
-| Roblox mirror down | Circuit breaker | Skips 60 s, auto-recovers |
-| Google Sheets 500 | Per-source isolation | Other DBs still searched |
-| Preemptive stale | TTL expiry | Silent re-scan on next typing |
-
----
-
-## 🗺️ Roadmap
-
-What's next after v5.0.0:
+## Roadmap
 
 ### High impact
 
-1. **`BLOXLINK_HARD_TIMEOUT_MS` 1500 → 700 ms.** Bloxlink is now the live-path ceiling at 801 ms. Capping at 700 ms drops live-path total to ~700 ms — 12% faster on the cold path. Zero risk (shield handles timeouts).
+**1. Lower `BLOXLINK_HARD_TIMEOUT_MS` from 1500 ms → 700 ms.**
+In the current measurement, Bloxlink determined the live-path total at 800 ms. Capping at 700 ms would drop live-path runtime to ~700 ms when Bloxlink is slow — a 100 ms improvement in the worst case, no change in the fast case. The shield already handles timeouts gracefully, so this is a config change rather than a code change.
 
-2. **Cache `exploit_watcher`.** Currently the preemptive ceiling at 65 ms. Cached for 30 min would drop fast-path to ~20 ms.
+**2. Cache `exploit_watcher` results.**
+Currently the preemptive ceiling at 65 ms. Exploit Watcher flags are historical, not real-time, so a 30-minute cache is safe. Would drop the preemptive path from 65 ms → ~20 ms.
 
-3. **Scan new members on join.** `on_member_join` handler raises preemptive hit rate for lurkers who join before posting.
+**3. Scan new members on join.**
+Currently only users who type in the recruitment channel trigger a preemptive scan. An `on_member_join` handler would scan members who join but lurk before posting, raising preemptive hit rate. Requires rate-limiting to avoid scan bursts on raid.
 
 ### Medium impact
 
-4. **Backfill `xtracker_by_id` for historical IDs.** Currently cached per scan; background job could pre-populate.
+**4. Backfill `xtracker_by_id` for historical IDs.**
+The preemptive scan collects Xtracker for all known IDs at scan time. A background job could pre-populate for IDs the current scan missed. Would close a gap where a newly discovered historical ID has no cached Xtracker result.
 
-5. **Parallelize `/health check`.** Currently sequential; ~4 s → ~1 s.
+**5. Parallelize `/health check`.**
+Currently sequential per-source. Parallelizing would drop ~4 seconds to ~1 second.
 
 ### Low impact
 
-6. **`/debug search`** — filter historical BGCs by status/reason/date.
+**6. `/debug search`** — filter historical BGCs by status, reason, or date range.
 
-7. **Prometheus metrics endpoint.**
+**7. Prometheus metrics endpoint.**
+
+---
+
+## Reference
+
+### Full source inventory
+
+| Source | Type | Records | Checked against |
+| :--- | :--- | ---: | :--- |
+| Roblox API (3 mirrors) | REST | ∞ | Username, ID, groups |
+| Xtracker registry | REST | — | Every known Roblox ID |
+| Xtracker ownership | REST | — | Every known Roblox ID |
+| Keystone | REST | 2,252 | Every known ID + name |
+| Snow Core | Google Sheet | 1,769 | Every known Roblox ID |
+| Imperial Armada Blacklist | Google Sheet | 424 | Every known ID + name |
+| Dragonborn Blacklist | Google Sheet | 2,810 | Every known ID + name |
+| SURGE Mainframes | Google Sheet | 634 | Every known ID + name |
+| SOL Blacklists | Google Sheet | 270 | Every known ID + name |
+| SOL Base Banlist | Google Sheet | 204 | Every known ID + name |
+| BB:PC Tracker | Google Sheet | 41 | Every known ID + name |
+| User blacklist | Google Sheet | *(config)* | Discord ID + Roblox name + past names |
+| Group blacklist | Google Sheet | *(config)* | Roblox group memberships |
+| Bloxlink | REST | — | Discord → Roblox resolution |
+| Roblox Watcher | REST | — | Discord ID |
+| Exploit Watcher | REST | — | Discord ID |
+| Simmer | REST | — | Every known Roblox ID |
+
+### Domains contacted
+
+**Raced (3 mirrors, first 200 wins):**
+- `users.rotunnel.com`, `users.roproxy.com`, `users.roblox.com` — user lookups, info, history
+- `groups.rotunnel.com`, `groups.roproxy.com`, `groups.roblox.com` — group memberships
+
+**Direct:**
+- `api.blox.link` — Bloxlink
+- `api.xtracker.xyz` — Xtracker
+- `api.keystone-swords.com` — Keystone
+- `api.simmer.icu` — Simmer
+- `api.robloxwatcher.com` — Roblox Watcher + Exploit Watcher
+- `docs.google.com` — all Google Sheets via gviz
+
+### Known limitations
+
+- **Live-path runtime is not measured statistically.** Every figure here is a single observation. p50/p95/p99 measurements would require multiple repeated runs, which are not currently collected.
+- **Bloxlink latency in the live-path probe is a single observation.** It happened to be 800 ms on the day of measurement. It could be 300 ms or 1400 ms on another day; the ceiling is 1500 ms.
+- **Record counts drift.** The 8,404 figure was captured in one `/health check` run. Google Sheets are editable, so counts will change.
+- **Preemptive hit rate is not measured.** The bot tracks session-level hit/miss counts (`_metrics_preemptive_hits`, `_metrics_preemptive_misses`) but these are not persisted across restarts, so a stable hit rate is not available.
+- **The 65 ms and 801 ms figures are not directly comparable.** See the caveat under [Runtime breakdown](#v500-runtime-breakdown).
+- **Historical IDs are not fully covered by the preemptive scan.** The scan collects Xtracker for the current `bloxlink_roblox_id` plus any IDs already in the DB. If a new historical ID is discovered during a live check, its Xtracker result is fetched live and not cached. This is item 4 on the roadmap.
 
 ---
 
 <div align="center">
 
-**BGC Bot v5.0.0 — 123× faster than the coverage peak, 92× faster than the pre-coverage era, searching 8× more sources.**
-
 **Built by [Pizzarobloxh](https://github.com/Pizzarobloxh)**
+
+*Every figure in this document comes from an actual measurement. Estimates are labelled.*
 
 </div>
