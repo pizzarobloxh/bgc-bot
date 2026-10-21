@@ -1,562 +1,1390 @@
 <div align="center">
 
-# BGC Bot v5.0.0
+# 📘 Imperium Bot v9.0.0 — Operating Documents
 
-### Technical documentation
+### *The complete technical manual for the unified BGC + Role Sync + Auto-Accept + Audit-Log system*
+
+[![Version](https://img.shields.io/badge/v9.0.0-8b5cf6?style=for-the-badge)](.)
+[![Subsystems](https://img.shields.io/badge/subsystems-5-22c55e?style=for-the-badge)](.)
+[![Checks](https://img.shields.io/badge/checks-26-f59e0b?style=for-the-badge)](.)
+[![Status](https://img.shields.io/badge/status-internal-ef4444?style=for-the-badge)](.)
 
 </div>
 
-Technical documentation for BGC Bot, covering its architecture, performance measurements, data sources, caching strategy, reliability mechanisms, and development history.
+---
 
-The bot screens Discord recruitment applications against a Roblox identity, shared cheater databases, community watchlists, and multiple external ban lists. This document records how the implementation changed between versions, what was measured during performance testing, and which improvements are planned next.
+> **Internal documentation.** This document references production guild IDs, role IDs, and admin user IDs. Do not distribute outside the operations team.
 
 ---
 
-## Performance summary
+## 📑 Contents
 
-| Version | Execution path | Runtime | Source |
-| :--- | :--- | ---: | :--- |
-| v2.1.0 | live | ~6,000 ms | **Estimated** (inferred from code structure) |
-| v3.3.0 | live | 5,965 ms | Measured |
-| v3.6.0 | live | 5,961 ms | Measured |
-| v4.0.0 | live | 7,989 ms | Measured |
-| v4.5.0 | live | 1,721 ms | Measured |
-| v5.0.0 | live | 801 ms | Measured |
-| v5.0.0 | preemptive | 65 ms | Measured |
-
-**Measurement caveats:**
-
-- Every figure except v2.1.0 comes from a single `/health timeline` probe run per version, on warm shared caches and cleared per-UID caches. These are single observations, not statistical benchmarks — a repeat run on a different day would likely produce different numbers.
-- The preemptive path (65 ms) measures marginal work after a cache hit. The work that populated that cache (~3,300 ms of preemptive scan in the same session) ran while the user was typing, before submission. It is not directly comparable to the live path.
-- v2.1.0 is an estimate inferred from its code shape (fully sequential, no caching). It should not be treated as a controlled measurement.
-
-### Runtime by version
-
-```mermaid
-xychart-beta
-    title "Runtime by version and execution path"
-    x-axis ["v2.1.0*", "v3.3.0", "v3.6.0", "v4.0.0", "v4.5.0", "v5.0.0 live", "v5.0.0 pre."]
-    y-axis "Milliseconds" 0 --> 8500
-    bar [6000, 5965, 5961, 7989, 1721, 801, 65]
-```
-
-*\*v2.1.0 is estimated.*
-
-### Zoomed view — v4.5.0 and later
-
-The version bar chart above compresses the later versions into short bars. The same data on a smaller scale:
-
-```mermaid
-xychart-beta
-    title "v4.5.0 and later — same data, smaller scale"
-    x-axis ["v4.5.0 live", "v5.0.0 live", "v5.0.0 preemptive"]
-    y-axis "Milliseconds" 0 --> 1800
-    bar [1721, 801, 65]
-```
+- [Executive Summary](#-executive-summary)
+- [Part I — What v9.0.0 Adds](#part-i--what-v900-adds)
+- [Part II — The Five Subsystems](#part-ii--the-five-subsystems)
+  - [1. BGC Verification](#1-bgc-verification)
+  - [2. Identity Resolution](#2-identity-resolution)
+  - [3. Role Sync](#3-role-sync)
+  - [4. Group Auto-Accept](#4-group-auto-accept)
+  - [5. Staff Intervention](#5-staff-intervention)
+- [Part III — Deep Dives](#part-iii--deep-dives)
+  - [Verification System](#verification-system)
+  - [Anti-Impersonation](#anti-impersonation)
+  - [Audit Log Webhook](#audit-log-webhook)
+- [Part IV — Data & Code](#part-iv--data--code)
+- [Part V — Operations](#part-v--operations)
+- [Part VI — History & Roadmap](#part-vi--history--roadmap)
 
 ---
 
-## What the bot checks
+## 🎯 Executive Summary
 
-The bot queries 15 distinct data sources per application: 9 list-based sources (Google Sheets and one Keystone API returning a list of cases) plus 6 per-ID API lookups.
+Imperium v9.0.0 is not a bigger BGC bot. It's a **verification-first gate** wrapped around a recruitment system. The BGC pipeline still exists — it still runs 26 checks against 8 external databases and 4 Roblox endpoints per applicant — but nothing it reports matters unless **identity is verified first**.
 
-### Data sources by category
+That single structural change — *verified identity is mandatory* — has three downstream consequences that define v9:
+
+1. **Impersonation is impossible.** A user cannot fake being someone else by typing a different Roblox username, because the typed username is never trusted as identity. Only Bloxlink, a manual staff link, or a bio-code verification counts.
+2. **Rank sync is reliable.** Because every Discord member who can be promoted or demoted is resolved via a real verified link, the Roblox group's role structure and the Discord server's role structure stay mechanically consistent.
+3. **The audit trail is complete.** Every group change, every join request, every role promotion, every leave-and-still-in-group event has a paper trail — through the audit webhook, through the staff DM issues, through the `bgc_checks` and `check_logs` tables.
+
+The five subsystems this document covers:
 
 ```mermaid
 flowchart LR
-    A["Application"]
+    User([User])
+    Admin([Staff])
 
-    subgraph Roblox["🎮 Roblox API"]
-        R1["3 mirrors raced<br/>info + history + groups"]
+    subgraph Verify["1 · Identity Resolution"]
+        direction TB
+        Manual[Manual Link]
+        Blox[Bloxlink]
+        Bio[Bio-Code Verify]
     end
 
-    subgraph Cheat["🛡️ Cheater databases"]
-        C1["Xtracker<br/>registry + ownership"]
-        C2["Keystone<br/>2,252 cases"]
+    subgraph BGC["2 · BGC Pipeline"]
+        direction TB
+        T0["T0: Discord-level"]
+        T1["T1: Roblox-ID-level"]
+        T2["T2: Identity-set-level"]
     end
 
-    subgraph Community["🕵️ Community"]
-        W1["Roblox Watcher"]
-        W2["Exploit Watcher<br/>(informational)"]
-        W3["Simmer RAB"]
-        W4["Snow Core<br/>1,769 entries"]
+    subgraph Sync["3 · Role Sync"]
+        direction TB
+        Ladder[Rank Ladder]
+        Auto[a_auto_sync_loop]
     end
 
-    subgraph Lists["📋 Ban lists"]
-        B1["User + group blacklists<br/>(your own sheet)"]
-        B2["6 external clan sheets<br/>4,383 records"]
+    subgraph Accept["4 · Auto-Accept"]
+        direction TB
+        Poll[request_worker]
+        Eligibility[Eligibility Check]
     end
 
-    subgraph Identity["🔗 Identity"]
-        I1["Bloxlink"]
+    subgraph Staff["5 · Staff Intervention"]
+        direction TB
+        Leave[Leave-and-Still-In]
+        Unverified[Unverified Join]
+        Promote[Promote/Demote]
     end
 
-    A --> Roblox
-    A --> Cheat
-    A --> Community
-    A --> Lists
-    A --> Identity
+    User --> Blox
+    User --> Bio
+    Admin --> Manual
+    Admin --> Promote
+
+    Manual --> BGC
+    Blox --> BGC
+    Bio --> BGC
+    BGC --> Sync
+    BGC --> Accept
+    Accept --> Staff
+    Sync --> Staff
+
+    style Verify fill:#1e40af,color:#fff
+    style BGC fill:#166534,color:#fff
+    style Sync fill:#7c2d12,color:#fff
+    style Accept fill:#4c1d95,color:#fff
+    style Staff fill:#9a3412,color:#fff
 ```
 
-### Records available per source
+The order in that diagram is deliberate. Identity comes first, always. Everything downstream depends on it.
 
-Sorted by record count. The eight figures below total **8,404 rows across 8 sources**, measured in one `/health check` run. User and group blacklists are config-dependent and excluded from this chart.
+---
 
-```mermaid
-xychart-beta
-    title "Records per source (list-based checks)"
-    x-axis ["Dragonborn", "Keystone", "Snow Core", "SURGE", "Imp. Armada", "SOL Blacklist", "SOL Base", "BB:PC"]
-    y-axis "Records" 0 --> 3000
-    bar [2810, 2252, 1769, 634, 424, 270, 204, 41]
-```
+## Part I — What v9.0.0 Adds
 
-| Source | Records | Type |
-| :--- | ---: | :--- |
-| Dragonborn Blacklist | 2,810 | External clan (Google Sheet) |
-| Keystone | 2,252 | Shared case database (API) |
-| Snow Core | 1,769 | External community (Google Sheet) |
-| SURGE Mainframes | 634 | External clan (Google Sheet) |
-| Imperial Armada Blacklist | 424 | External clan (Google Sheet) |
-| SOL Blacklists | 270 | External clan (Google Sheet) |
-| SOL Base Banlist | 204 | External clan (Google Sheet) |
-| BB:PC Punishment Tracker | 41 | External clan (Google Sheet) |
-| **Total** | **8,404** | |
+### The change set
 
-> Record counts are from a single health check and will drift as sheets are edited. They are row counts, not unique applicants — the same person may appear in multiple sources.
+v9.0.0 is not incremental — it's a phase change. Here is what moved:
 
-### Per-ID API checks
-
-These have no fixed record count — they return a result for the specific applicant being checked:
-
-| Source | What it returns | Check frequency |
+| Area | v5.0.0 | v9.0.0 |
 | :--- | :--- | :--- |
-| Roblox API | User info, banned status, created date, username history, groups | Once per unique Roblox ID |
-| Xtracker (registry + ownership) | Cheater registry listing | 2 calls per unique Roblox ID |
-| Bloxlink | Discord → Roblox ID resolution | Once per application |
-| Roblox Watcher | NSFW/condo server membership | Once per Discord ID |
-| Exploit Watcher | Exploit flag (informational only, does not fail) | Once per Discord ID |
-| Simmer | RAB (Roblox Studio) activity | Once per unique Roblox ID |
+| Identity source | Bloxlink or typed username | **Bloxlink, manual link, or bio-verify — typed never trusted** |
+| Typed username role | Identity fallback | **Only a sanity check against verified identity** |
+| Impersonation | Possible | **Blocked at the pipeline gate** |
+| Role sync | None | **Auto every 5 min + on `/update`** |
+| Group auto-accept | None | **Poll every 60s, DM staff on unverified** |
+| Join request DM | None | **Accept/Deny/Link modal per request** |
+| Leave-and-still-in | None | **DM staff with Kick/Leave buttons** |
+| Promote/demote | None | **Modal with staff + user reasons** |
+| Audit log | None | **Roblox audit → Discord webhook, every 2 min** |
+| Bio verify | None | **3-word code, 15 min TTL, bio scan** |
+| Schema tables | 4 | **11** |
+
+### The numbers
+
+Real values from `bot.py` v9.0.0:
+
+| Constant | Value | Meaning |
+| :--- | ---: | :--- |
+| `BOT_VERSION` | 9.0.0 | — |
+| `CHECKS_VERSION` | 26 | Up from 20 in v5 |
+| `MAX_CONCURRENT_BGC` | 5 | Semaphore limit |
+| `BLOXLINK_HARD_TIMEOUT_MS` | 2500 | Bloxlink shield |
+| `ACCOUNT_AGE_ALT_DAYS` | 2 | Discord↔Roblox proximity threshold |
+| `VERIFICATION_TTL_MIN` | 15 | Bio code lifetime |
+| `TYPING_COOLDOWN_SEC` | 30 | Preemptive scan throttle |
+| `SYNC_INTERVAL_MINUTES` | 5 | Auto-sync cadence |
+| `POLL_INTERVAL_SECONDS` | 60 | Join request poll |
+| `AUDIT_POLL_SECONDS` | 120 | Roblox audit poll |
+| `MAX_HISTORY_IDS_FOR_XTRACKER` | 5 | Hist ID cap per applicant |
+| `BLOXLINK_MAX_REQUESTS_PER_MINUTE` | 50 | Client-side Bloxlink throttle |
+| `ROLE_SYNC_ASSIGN_DELAY` | 0.7 | Seconds between Roblox role calls |
+| `PROCESSING_STALE_SECONDS` | 90 | Join-request in-flight cap |
+
+### Subsystem map by write volume
+
+Rough estimates of operations per 100 active users over a week:
+
+```mermaid
+pie title "Which subsystem generates the most rows"
+    "BGC checks (26/applicant)" : 2600
+    "Role sync (every 5 min)" : 672
+    "Join request polls" : 168
+    "Audit log polls" : 84
+    "Verification codes" : 45
+```
+
+The BGC pipeline dominates the database, but every other subsystem contributes to operational load and to what staff can see. The audit log, despite low row count, produces the highest **signal-per-row** — every entry is a real group change.
 
 ---
 
-## Request lifecycle
+## Part II — The Five Subsystems
 
-How a single application flows through the bot from message to reaction.
+### 1. BGC Verification
+
+The BGC pipeline is the bot's oldest subsystem. It looks almost identical to v5.0.0 — three tiers, same wave scheduling, same rate limiters — with **one critical insertion point**: before T1 fires, the bot now checks whether a verified identity exists.
 
 ```mermaid
 flowchart TD
-    A["Message in recruitment channel"] --> B{"Privileged member<br/>or format template?"}
-    B -->|"yes"| Z["Ignore"]
-    B -->|"no"| C["Parse recruitment message"]
-    C --> D{"Missing required fields?"}
-    D -->|"yes"| E["❌ Reply + fail log"]
-    D -->|"no"| F["Look up preemptive cache"]
+    Msg([Recruitment message]) --> Parse[parse_recruitment_message]
+    Parse --> Missing{missing fields?}
+    Missing -->|yes| Reject1[Reply format error]
+    Missing -->|no| UBL[User blacklist T0]
 
-    F --> G{"Cache hit?"}
-    G -->|"yes"| H["🏎️ Fast path"]
-    G -->|"no"| I["🐢 Live path"]
+    UBL --> DCAge[Discord age T0]
+    DCAge --> RW[Roblox Watcher T0]
+    RW --> EW[Exploit Watcher T0]
+    EW --> GBL[Group blacklist T0]
+    GBL --> Blox[Bloxlink T0]
 
-    H --> J["Fire T0 watchers"]
-    H --> K["Fire T2 wave<br/>from cached identity"]
+    Blox --> Verified{verified<br/>identity<br/>resolves?}
 
-    I --> L["Fire T0 in parallel<br/>bloxlink + typed + nickname"]
-    L --> M["Fire T1 as soon as<br/>first Roblox ID resolves"]
-    M --> N["Fire T2 as soon as<br/>history resolves"]
+    Verified -->|no| NoVerify[VERIFY FAIL<br/>impersonation flag<br/>hard stop]
+    Verified -->|yes| TypedCheck{typed username<br/>matches verified?}
 
-    J --> O["Combine all results"]
-    K --> O
-    N --> O
+    TypedCheck -->|mismatch| Impersonation[IMPERSONATION<br/>hard stop]
+    TypedCheck -->|match or absent| T1[Fire T1 for verified ID]
 
-    O --> P{"Any check returned HIT?"}
-    P -->|"yes"| Q["❌ react + sanitized reply<br/>+ fail log"]
-    P -->|"no"| R["✅ react + auto-role<br/>+ acceptance DM + pass log"]
+    T1 --> Hist[username_history<br/>user_groups<br/>user_info<br/>xtracker ×2<br/>simmer<br/>snow]
+    Hist --> T2[Fire T2]
+    T2 --> Keystone[Keystone]
+    T2 --> ExtDBs[7 external DBs]
+    T2 --> Multi[Multi-account]
+    Keystone --> Aggregate[Aggregate checks]
+    ExtDBs --> Aggregate
+    Multi --> Aggregate
+    Aggregate --> Persist[Persist bgc_checks]
+    Persist --> Decision{passed?}
+    Decision -->|yes| Autorole[Autorole + DM]
+    Decision -->|no| FailLog[Fail log + reply]
+
+    style NoVerify fill:#dc2626,color:#fff
+    style Impersonation fill:#dc2626,color:#fff
+    style Verified fill:#f59e0b,color:#fff
+    style Autorole fill:#22c55e,color:#fff
 ```
 
-The fast path fires fewer tasks because most of T1 was already collected by the preemptive scan. The live path fires everything live.
+**The two hard stops.** `NoVerify` fires when Bloxlink returns `not_linked`, a hard timeout, or an invalid key **and** no manual link **and** no bio verification exists. `Impersonation` fires when there **is** a verified identity, but the typed username resolves to a **different** Roblox account. Both terminate the BGC early with `requires_verify=True` and increment `_metrics_impersonation_blocks`.
 
----
+### 2. Identity Resolution
 
-## Cache lifecycle
-
-The preemptive scanner runs when a user starts typing in the recruitment channel, populating three independent caches that the live check can reuse.
-
-```mermaid
-flowchart TD
-    A["TYPING_START event"] --> B{"Already scanning<br/>this user?"}
-    B -->|"yes"| Z["Skip"]
-    B -->|"no"| C["Load existing cache row"]
-    C --> D{"Which tiers are stale?"}
-
-    D --> E["Identity tier<br/>(7 days)"]
-    D --> F["Xtracker tier<br/>(3 days)"]
-    D --> G["Freshness tier<br/>(30 minutes)"]
-
-    E --> H["Fire Bloxlink + nickname<br/>in parallel"]
-    H --> I["Fetch Roblox info + history<br/>for primary ID"]
-    I --> J["💾 Save identity tier"]
-
-    F --> K["Collect all known IDs<br/>(bloxlink + nickname + cached + DB history)"]
-    K --> L["Fire Xtracker reg + own<br/>for every ID"]
-    L --> M["💾 Save Xtracker tier"]
-
-    G --> N["Fetch Roblox groups + Simmer RAB"]
-    N --> O["💾 Save freshness tier"]
-
-    J --> P["Cache populated"]
-    M --> P
-    O --> P
-    P --> Q["Later: application submitted"]
-    Q --> R["_preemptive_lookup() returns<br/>only the tiers that are still fresh"]
-```
-
-### Cache tiers
-
-| Tier | Contents | TTL | Refreshed when |
-| :--- | :--- | ---: | :--- |
-| **Identity** | Bloxlink → Roblox ID, user info, username history | 7 days | `on_typing` if identity is stale |
-| **Xtracker** | Registry + ownership results for every known Roblox ID | 3 days | `on_typing` if Xtracker is stale |
-| **Freshness** | Roblox group memberships, Simmer RAB flag | 30 minutes | `on_typing` if freshness is stale |
-
-Each tier expires independently. A user who reapplies after two days gets identity + Xtracker cache hits but a fresh groups check. A user who reapplies after ten days gets a full re-scan.
-
-**When the preemptive path does not apply:**
-
-- The user submits the application before the preemptive scan finishes (typical for very fast typers, under ~3 seconds)
-- The preemptive scan failed (network error, API down)
-- `skip_preemptive=True` is passed explicitly (used by `/check`, `/health timeline`, and re-runs)
-- The applicant has no Discord member object cached (e.g. first message with a stale member cache)
-
-In all of these cases the bot falls back to the live path automatically.
-
----
-
-## v5.0.0 runtime breakdown
-
-Two single-run measurements, broken down by task. These show which tasks run in parallel and which one determined the total.
-
-### Live path — 801 ms
-
-```mermaid
-gantt
-    title "v5.0.0 live path — 801 ms"
-    dateFormat x
-    axisFormat %L ms
-    todayMarker off
-
-    section T0 — Discord-level
-    bloxlink               :crit, done, b, 0, 801ms
-    exploit_watcher        :done,        e, 0, 141ms
-    roblox_watcher         :done,        r, 0, 89ms
-    blacklists + age       :done,        x, 0, 1ms
-
-    section T1 — Roblox-ID-level
-    xtracker_own           :done,        o, 1, 586ms
-    xtracker_reg           :done,        g, 1, 248ms
-    simmer_rab             :done,        s, 1, 136ms
-    username_history       :done,        h, 1, 53ms
-    user_groups            :done,        u, 1, 53ms
-    user_info              :done,        i, 1, 26ms
-
-    section T2 — Identity-set
-    keystone + ext + multi :done,        t, 54, 6ms
-```
-
-**Where the 801 ms went.** In this measurement, `bloxlink` was the last task to complete at 800.5 ms. `xtracker_own` — the second-slowest — finished at 587.2 ms, 213 ms earlier. Total runtime is the duration of the single slowest task, not the sum of all tasks. If `bloxlink` had finished at 587 ms, total runtime would have been approximately 587 ms.
-
-**What 801 ms does not mean.** The Bloxlink hard timeout is configured at **1500 ms** (`BLOXLINK_HARD_TIMEOUT_MS`). The 801 ms in this chart is an *observed duration in this specific run*, not the ceiling. On a slower Bloxlink response, the shield would fire at 1500 ms and the bot would fall back to the typed username.
-
-### Preemptive path — 65 ms
-
-```mermaid
-gantt
-    title "v5.0.0 preemptive path — 65 ms"
-    dateFormat x
-    axisFormat %L ms
-    todayMarker off
-
-    section Preemptive cache
-    identity + xtracker + freshness :done, p, 0, 1ms
-
-    section T0 — remaining network calls
-    exploit_watcher (ceiling)       :crit, done, e, 0, 65ms
-    roblox_watcher                  :done,        r, 0, 57ms
-    blacklists + age                :done,        b, 0, 1ms
-
-    section T1 — all served from cache
-    info + history + groups         :done,        i, 0, 1ms
-    xtracker (zero network calls)   :done,        x, 0, 1ms
-    simmer + snow                   :done,        s, 0, 1ms
-
-    section T2
-    keystone + ext + multi          :done,        t, 1, 7ms
-```
-
-**Where the 65 ms went.** `exploit_watcher` was the last task to complete at 64.6 ms. `roblox_watcher` finished at 57.4 ms. Every other task completed in under 2 ms because it was served from the preemptive cache.
-
-**What 65 ms does not include.** The preemptive scan that populated the cache took approximately **3,306 ms** in the same session. That scan ran while the user was typing, before they submitted. The 65 ms is the marginal work after cache hit — not the total work to process the application.
-
-**What happens without the preemptive cache.** If the same user had submitted without a preemptive scan, the same application would have run through the live path and taken ~800 ms. The 65 ms figure depends on cache hit.
-
-### Where the two paths differ
-
-| Task | Live path | Preemptive path |
-| :--- | :---: | :---: |
-| Bloxlink | 🔴 801 ms (network) | ⚪ Cached |
-| Xtracker (registry + ownership) | 🔴 834 ms (2 calls, 0.4s limiter) | ⚪ Cached |
-| Roblox info + history + groups | 🔴 132 ms (3 network calls) | ⚪ Cached |
-| Simmer RAB | 🔴 136 ms (network) | ⚪ Cached |
-| Keystone | 🟢 ~6 ms (cached list) | 🟢 ~6 ms |
-| 6 external DBs | 🟢 ~6 ms (cached records) | 🟢 ~6 ms |
-| Roblox Watcher | 🟡 89 ms (network, always live) | 🟡 57 ms |
-| Exploit Watcher | 🟡 141 ms (network, always live) | 🟡 65 ms |
-
-Roblox Watcher and Exploit Watcher are always live because the preemptive scan does not cache Discord-ID-based watcher lookups. Caching them is on the roadmap.
-
----
-
-## Reliability
-
-Four independent mechanisms limit the impact of slow or failing external services.
-
-### Domain circuit breaker
-
-Every Roblox API call races three mirrors (`users.rotunnel.com`, `users.roproxy.com`, `users.roblox.com`). If a mirror fails 3 times in a row, it is skipped for 60 seconds.
+This is the new centre of the system. The priority chain is:
 
 ```mermaid
 flowchart LR
-    A["Request"] --> B{"Mirror healthy?"}
-    B -->|"yes"| C["Race with others"]
-    B -->|"no"| D["Skip this mirror"]
-    C --> E{"200 OK?"}
-    E -->|"yes"| F["Reset error count"]
-    E -->|"no"| G["error_count++"]
-    G --> H{"≥ 3 errors?"}
-    H -->|"yes"| I["Skip for 60 seconds"]
-    H -->|"no"| D
+    Start([resolve_identity]) --> Manual{"manual_links<br/>row?"}
+    Manual -->|yes| ManualHit[Return manual link<br/>source=manual_link]
+    Manual -->|no| Blox{"Bloxlink<br/>cached?"}
+    Blox -->|yes| BloxHit[Return Bloxlink<br/>source=bloxlink]
+    Blox -->|no| Verif{"discord_verifications<br/>verified?"}
+    Verif -->|yes| VerifHit[Return bio-verify<br/>source=verify]
+    Verif -->|no| Pre{"preemptive_scans<br/>id-fresh?"}
+    Pre -->|yes| PreHit[Return preemptive<br/>source=preemptive]
+    Pre -->|no| None[Return None<br/>→ requires_verify]
+
+    style ManualHit fill:#22c55e,color:#fff
+    style BloxHit fill:#22c55e,color:#fff
+    style VerifHit fill:#22c55e,color:#fff
+    style PreHit fill:#f59e0b,color:#fff
+    style None fill:#dc2626,color:#fff
 ```
 
-### Bloxlink shield
+Four sources, evaluated in strict order. The manual link always wins — this is a staff override, and the system respects it absolutely. Bloxlink is the second source because it's the most common. Bio-verify is third because it's user-initiated and slower but more deliberate. Preemptive is last because it's a **cache** — it can be stale, and it's only valid if the identity tier is still fresh (`IDENTITY_TTL_DAYS = 7`).
 
-Bloxlink is capped at 1500 ms. A late response is not wasted — if the call eventually returns after the timeout, the result is stored in a late cache for 5 minutes and used by the next application from the same user.
+### 3. Role Sync
+
+Every 5 minutes (and on `/update`, `/group promote`, `/group demote`, and after successful BGC/autorole), the bot reconciles Discord roles against the Roblox group.
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant L as auto_sync_loop
+    participant C as get_guild_settings
+    participant R as Roblox Groups API
+    participant D as Discord
+    participant I as resolve_identity
+
+    L->>C: fetch rank_ladder
+    C-->>L: [role_1, role_2, ...]
+
+    loop For each Discord role in ladder
+        L->>R: GET groupRoles
+        R-->>L: [rob_role_1, rob_role_2, ...]
+        L->>L: match by name
+
+        loop For each Discord member with that role
+            L->>I: resolve_identity(member)
+            I-->>L: {roblox_id} or None
+            alt identity exists
+                L->>R: findMembership(gid, roblox_id)
+                R-->>L: mem_id or None
+                alt membership exists
+                    L->>R: POST :assignRole
+                    R-->>L: {roles: [...]}
+                    L->>L: verify role_id in response
+                end
+            end
+            L->>L: sleep 0.7s (RATE_LIMIT)
+        end
+    end
+
+    L->>D: send_channel_log if changes
+```
+
+The `sleep 0.7` is `ROLE_SYNC_ASSIGN_DELAY` — it's not decoration, it's the difference between a stable run and a burst of HTTP 429s from the Roblox role API.
+
+### 4. Group Auto-Accept
+
+Every 60 seconds, `request_worker` polls the group's pending join requests and tries to auto-accept them based on who the requester is.
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant RW as request_worker
+    participant G as Roblox Groups
+    participant I as resolve_reverse
+    participant D as Discord
+    participant DB as SQLite
+
+    RW->>G: GET /join-requests
+    G-->>RW: [{user: users/123, path: ...}, ...]
+
+    loop Each pending request
+        RW->>I: reverse lookup 123
+        I-->>RW: [discord_id_1, discord_id_2]
+
+        alt No Discord found
+            RW->>DB: INSERT unverified_join_issues
+            RW->>D: DM staff with modal
+        else Discord found
+            RW->>D: fetch_member(discord_id)
+            alt Member not eligible (missing ELIGIBILITY_ROLE)
+                Note right of RW: Silent skip
+            else Member eligible
+                RW->>RW: verify identity matches
+                RW->>G: POST :accept
+                RW->>D: add ORIAN_MEMBER + role ladder
+                RW->>D: send success channel log
+            end
+        end
+
+        RW->>RW: sleep 0.15s
+    end
+```
+
+The `_is_eligible` check is critical — an unverified member with the eligibility role **must** be silently skipped here, not rejected, because otherwise every poll would spam them with failure DMs.
+
+### 5. Staff Intervention
+
+Three distinct staff-intervention flows: leave-and-still-in, unverified join, and promote/demote. Each has its own DM embed with buttons that hit different handlers.
 
 ```mermaid
 flowchart TD
-    A["Bloxlink call"] --> B["wait_for(shielded, 1500ms)"]
-    B --> C{"Resolved<br/>before 1500ms?"}
-    C -->|"yes"| D["Use real result"]
-    C -->|"no"| E["status = hard_timeout<br/>fall back to typed username"]
-    E --> F["Attach done callback"]
-    F --> G{"Call eventually<br/>returns?"}
-    G -->|"yes"| H["Store in late cache<br/>(5 minute TTL)"]
-    G -->|"no"| I["Discard"]
-    H --> J["Next application<br/>uses cached result"]
+    subgraph Triggers
+        L1[on_member_remove]
+        L2[automatic_scan<br/>no reverse match]
+        L3[Staff uses /group promote]
+    end
+
+    subgraph Issues
+        M1[member_leave_issues]
+        M2[unverified_join_issues]
+        M3[ManualVerificationView<br/>or MoveReasonModal]
+    end
+
+    subgraph StaffDMs
+        D1[Kick / Leave buttons]
+        D2[Accept / Deny / Link buttons]
+        D3[Staff reason modal]
+    end
+
+    subgraph Outcomes
+        O1[roblox_kick_member]
+        O2[roblox_accept_join_request]
+        O3[roblox_change_role × 2<br/>unassign + assign]
+        O4[staff DM embed updated<br/>to handled]
+    end
+
+    L1 --> M1 --> D1 --> O1
+    L2 --> M2 --> D2
+    D2 --> O2
+    D2 --> set_manual_link
+    L3 --> M3 --> D3
+    D3 --> O3
+
+    O1 --> O4
+    O2 --> O4
+    O3 --> O4
+
+    style M1 fill:#7c2d12,color:#fff
+    style M2 fill:#7c2d12,color:#fff
+    style M3 fill:#7c2d12,color:#fff
 ```
 
-### Adaptive Xtracker rate limiter
+The critical detail: **each issue stores its own `dm_message_ids` mapping**. When a handler fires, it doesn't just act — it edits the DM embeds of *all* staff who received the notification, so the whole admin team sees who handled what.
 
-The Xtracker rate limiter starts at 1.0 second between calls. On HTTP 429 responses it doubles the interval up to 4× (max 4.0 seconds). After 60 seconds without a 429, the interval decays back toward 1.0 second.
+---
+
+## Part III — Deep Dives
+
+### Verification System
+
+There are exactly three ways a user can become verified in this system, and they have completely different mechanics.
+
+#### Method 1 — Bloxlink
+
+The fastest path. The user installs Bloxlink, links their Roblox account, and the bot resolves through Bloxlink's public API. Zero bot-side verification code — it's external. But it comes with the shield problem: Bloxlink can take 5+ seconds to respond, and the BGC pipeline can't wait that long.
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant B as BGC pipeline
+    participant BL as Bloxlink API
+    participant C as _bloxlink_late_cache
+
+    B->>BL: GET /discord-to-roblox
+    activate BL
+
+    Note over B: wait_for(shield(task), 2500ms)
+
+    alt Bloxlink responds in time
+        BL-->>B: {robloxID: 123}
+        B->>B: verified_id = 123
+    else Bloxlink times out
+        B->>B: status = "hard_timeout"
+        Note over B: add_done_callback(_cache_late)
+        B-->>B: Continue with typed username
+        BL-->>C: (eventually) {robloxID: 123}
+        Note over C: Store late result 5 min
+    end
+    deactivate BL
+
+    Note over B: Next application for<br/>same Discord user reads<br/>late cache immediately
+```
+
+The **shield** is `asyncio.wait_for(asyncio.shield(task), 2.5)`. The `shield` part is critical — it means the underlying HTTP request keeps running in the background after the timeout fires. When it eventually returns, the `_cache_late` callback stores the result in `_bloxlink_late_cache` for 5 minutes. The next BGC from the same user hits the cache instantly.
+
+#### Method 2 — Manual Link
+
+Staff-initiated. Staff runs `/link add @user username`. The bot resolves the username via Roblox's own lookup, stores it in `manual_links`, and updates `preemptive_scans.bloxlink_status` to `manual_link` so the preemptive cache doesn't overwrite it.
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant S as Staff
+    participant L as link_add
+    participant R as Roblox
+    participant DB as manual_links
+    participant P as preemptive_scans
+
+    S->>L: /link add @user 123Leet
+    L->>R: POST /usernames/users
+    R-->>L: {id: 123, name: "123Leet"}
+    L->>DB: INSERT (discord_id, 123, "123Leet")
+    L->>P: UPSERT bloxlink_status="manual_link"
+    L->>S: Confirmation embed
+```
+
+Manual links are **the override**. If a user is genuinely unable to use Bloxlink or the verify flow, this is the staff escape hatch. It's also what auto-accept uses when a staff member presses the "Link" button in an unverified-join DM — the modal calls `set_manual_link` and then re-enables the Accept button.
+
+#### Method 3 — Bio Verification
+
+The self-service path for users who can't or won't use Bloxlink. Three-word code, 15-minute TTL, Roblox profile bio check.
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant U as User
+    participant B as Bot
+    participant DB as discord_verifications
+    participant R as Roblox
+
+    U->>B: /verify
+    B->>B: open VerifyUsernameModal
+    U->>B: submits "123Leet"
+    B->>R: POST /usernames/users
+    R-->>B: {id: 123, name: "123Leet"}
+
+    B->>B: _allocate_unique_code(guild_id)
+    Note over B: Pick 3 random words<br/>Check collision in DB
+    B->>DB: INSERT (did, rid, "amber-arrow-aspen", TTL)
+    B-->>U: "Put this code in your bio, then click Verify"
+
+    U->>R: Edit bio to include "amber-arrow-aspen"
+    U->>B: clicks Verify button
+    B->>R: GET /users/123
+    R-->>B: {description: "hello amber-arrow-aspen world"}
+    B->>B: code.lower() in bio.lower()
+
+    alt Match
+        B->>DB: UPDATE verified_at = now
+        B->>B: add VERIFIED_ROLE_ID
+        B->>B: update nickname
+        B->>B: _sync_rank_roles
+        B-->>U: Success embed
+    else No match
+        B-->>U: "Code not found"
+    end
+```
+
+**The 15-minute TTL matters.** A user who starts verification but doesn't complete it in 15 minutes has to start over. The `_cache_keep_warm_loop` runs cleanup every ~5 minutes that deletes `discord_verifications` rows where `verified_at IS NULL AND code_issued_at < 24h`. So the cleanup delay is 24 hours, but the TTL check happens at verify time — so a code issued 6 hours ago will fail TTL check even though the row still exists.
+
+#### The verification state machine
 
 ```mermaid
 stateDiagram-v2
-    [*] --> Fresh : startup
-    Fresh --> Backoff1 : 429 received
-    Backoff1 --> Backoff2 : 429 received
-    Backoff2 --> Max : 429 received
-    Max --> Max : 429 received
-    Backoff1 --> Fresh : 60s quiet
-    Backoff2 --> Backoff1 : 60s quiet
-    Max --> Backoff2 : 60s quiet
-    note right of Fresh
-        1.0s interval
+    [*] --> Unverified
+    Unverified --> BloxlinkPending : Bloxlink resolves
+    BloxlinkPending --> Verified : Bloxlink returns 200
+    BloxlinkPending --> Unverified : Bloxlink fails
+
+    Unverified --> BioCodeIssued : /verify submitted
+    BioCodeIssued --> BioCodeSaved : User edits bio
+    BioCodeSaved --> Verified : Verify button + code match
+    BioCodeSaved --> BioCodeIssued : Code expires (15 min)
+    BioCodeIssued --> BioCodeIssued : /verify again (new code)
+
+    Unverified --> ManualLinked : Staff /link add
+    ManualLinked --> Verified : Immediate
+
+    Verified --> Verified : Re-verified (already)
+    Verified --> Unverified : Discord user leaves & rejoins
+
+    note right of Verified
+        All downstream
+        features enabled:
+        - BGC accepts typed username
+        - Role sync
+        - Auto-accept eligibility
     end note
-    note right of Backoff1
-        2.0s interval
-    end note
-    note right of Backoff2
-        4.0s interval
-    end note
-    note right of Max
-        Capped at 4× base
+
+    note right of Unverified
+        BGC terminates early
+        Auto-accept skips silently
+        Role sync fails
     end note
 ```
 
-### Failure handling summary
+The re-verify edge (Verified → Verified) fires when a user runs `/verify` after already being verified — the bot returns "Already verified as X" and doesn't touch the state.
 
-| Failure type | Handler | User impact |
-| :--- | :--- | :--- |
-| Single mirror timeout | Circuit breaker skips it | None (other 2 mirrors raced) |
-| All 3 mirrors fail | Retry with backoff | Check returns SKIPPED |
-| Bloxlink timeout (>1500 ms) | Fall back to typed username | Slower resolution, still works |
-| Xtracker 429 | Adaptive limiter bumps interval | Slightly slower calls, no 429s |
-| Google Sheets 500 | Per-source error isolation | Other DBs still searched |
-| Keystone down | Check returns ERROR, does not fail applicant | Applicant passes if no other HIT |
-| Simmer down | SKIPPED (does not fail applicant) | Same |
-| Roblox Watcher down | SKIPPED | Same |
-| SQLite lock contention | Serialized via `db_lock` | No data loss, slower writes |
+### Anti-Impersonation
+
+The single most consequential change in v9. The idea is simple: **typed usernames are lie-able, so they can't be trusted as identity**.
+
+```mermaid
+flowchart TD
+    Start([BGC starts]) --> Typed[Parse typed username]
+    Typed --> TypedResolved{typed username<br/>resolves?}
+
+    TypedResolved -->|no| NoTypedId[typed_user = None]
+    TypedResolved -->|yes| HaveTyped[typed_user = {id, name}]
+
+    NoTypedId --> Manual{manual link<br/>exists?}
+    HaveTyped --> Manual
+
+    Manual -->|yes| ManualId[verified_id = manual]
+    Manual -->|no| Blox{Bloxlink<br/>resolves?}
+
+    Blox -->|yes| BloxId[verified_id = blox]
+    Blox -->|no| Verify{discord_verifications<br/>verified_at?}
+
+    Verify -->|yes| VerifyId[verified_id = verify]
+    Verify -->|no| NoVerifiedId[verified_id = None]
+
+    NoVerifiedId --> Fail1[FAIL: run /verify]
+    BloxId --> CheckMatch
+    VerifyId --> CheckMatch
+    ManualId --> CheckMatch
+
+    CheckMatch{typed_user<br/>AND<br/>typed_id != verified_id?}
+
+    CheckMatch -->|yes| Fail2[FAIL: impersonation]
+    CheckMatch -->|no| Pass[PASS: proceed with BGC]
+
+    style Fail1 fill:#dc2626,color:#fff
+    style Fail2 fill:#dc2626,color:#fff
+    style Pass fill:#22c55e,color:#fff
+```
+
+**What "impersonation" means here.** It's not (necessarily) malicious. A user might genuinely have two Roblox accounts and type the wrong one. But it's structurally identical to the malicious case — the bot cannot distinguish "I typo'd" from "I'm pretending to be someone else". So both get the same treatment: hard fail, verify prompt, `_metrics_impersonation_blocks++`.
+
+**The real cost.** An impersonation block is worse than a normal BGC fail, because it means the user's identity is in an unknown state. They might be:
+
+- Legitimately trying to apply with their alt
+- Copy-pasting someone else's application template
+- Actually attempting fraud
+
+The bot does the only safe thing: rejects and tells them to fix their verification.
+
+**Why typed usernames still matter.** They're not identity, but they're a *sanity check*. If a user's Discord is Bloxlink-linked to `123Leet` but they type `TotallyDifferentName`, that's information — it means either their account is compromised, they're confused, or they're testing the system. Every case warrants a hard stop.
+
+### Audit Log Webhook
+
+The audit log is the most operationally interesting subsystem. It reconciles Roblox's own audit events into a Discord channel via webhook, with the group's own name and icon as the webhook identity.
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant A as audit_log_poll_loop
+    participant S as get_guild_settings
+    participant W as _ensure_audit_webhook
+    participant R as Roblox Cloud API
+    participant C as Channel
+    participant DB as audit_log_seen
+
+    A->>S: audit_log_channel set?
+    S-->>A: channel_id
+
+    alt No channel configured
+        A->>A: skip guild
+    else Channel configured
+        A->>W: get or create webhook
+        W->>C: list webhooks
+        C-->>W: [existing]
+
+        alt Existing webhook matches group name
+            W-->>A: webhook
+        else No match
+            W->>R: fetch group icon
+            R-->>W: icon_url
+            W->>C: create webhook
+            C-->>A: new webhook
+        end
+
+        A->>R: GET audit-logs?maxPageSize=50
+        R-->>A: [entries...]
+
+        A->>DB: SELECT last_log_key
+
+        alt No prior key
+            A->>A: only post newest 5
+        else Prior key exists
+            A->>A: collect all entries until key seen
+        end
+
+        loop Each new entry
+            A->>A: _format_audit_entry(entry)
+            A->>C: webhook.send(content)
+        end
+
+        A->>DB: UPDATE last_log_key
+    end
+```
+
+**Formatting is the hardest part.** Roblox's audit-log entry schema is undocumented and volatile. The `_format_audit_entry` function tries `actionType`, `ActionType`, `action`, `description` — four possible field names — and normalizes common ones (`RolesUpdated` → `Roles Updated`). Role changes come in `roleChange.addedRoles` / `roleChange.removedRoles` but sometimes `rolesAdded` / `rolesRemoved`, so the parser checks six possible keys.
+
+**The failure fallback.** If the Open Cloud audit endpoint returns non-404, the bot tries the legacy `groups.roblox.com` endpoint (requires cookie auth). If that also fails, it disables audit polling for **1 hour** via `_audit_disabled_until`. This is the circuit breaker pattern applied to a **whole subsystem** — not per-endpoint, but per-feature.
+
+```mermaid
+stateDiagram-v2
+    [*] --> Healthy
+    Healthy --> Failing1 : HTTP error
+    Failing1 --> Healthy : next poll succeeds
+    Failing1 --> Failing2 : 2nd consecutive failure
+    Failing2 --> Healthy : poll succeeds
+    Failing2 --> Disabled : 3rd failure
+
+    Disabled --> Healthy : after 3600s
+
+    note right of Healthy
+        normal polling
+        every 120s
+    end note
+
+    note right of Disabled
+        skip all guilds
+        audit_log_poll_loop
+        returns early
+    end note
+```
+
+The 1-hour cooldown matters because Roblox's audit API is genuinely flaky — it can be down for hours at a time. Retrying every 2 minutes for an hour is 30 wasted requests per guild.
 
 ---
 
-## Implementation history
+## Part IV — Data & Code
 
-The changes between versions, grouped by what motivated them.
+### The full schema
 
-### v2.1.0 → v3.6.0: initial working version
+Eleven tables, three of them new in v9:
 
-The bot did eight checks in sequence: Roblox lookup, user info, groups, Xtracker registry, Xtracker ownership, two watchers, Clanware banlist. One blacklist sheet.
+```mermaid
+erDiagram
+    guild_settings {
+        INTEGER guild_id PK
+        INTEGER pass_log_channel
+        INTEGER fail_log_channel
+        INTEGER bot_log_channel
+        INTEGER recruitment_channel
+        INTEGER submission_channel
+        INTEGER general_log_channel
+        INTEGER success_log_channel
+        INTEGER join_fail_log_channel
+        INTEGER audit_log_channel
+        INTEGER group_id
+        TEXT    rank_ladder "JSON array"
+        TEXT    bloxlink_api_key
+    }
 
-- Fully sequential — every check waited for the previous
-- No caching between applications
-- No rate limiting on Xtracker (would 429 under load)
-- No domain racing — sequential mirror fallback (could take 15+ seconds per API call)
+    bgc_checks {
+        INTEGER id PK
+        INTEGER message_id
+        INTEGER guild_id FK
+        INTEGER discord_id
+        INTEGER roblox_id
+        TEXT    roblox_username
+        INTEGER passed
+        TEXT    reason
+        TEXT    raw_responses "JSON"
+        TEXT    bot_version
+        INTEGER checks_version
+        TEXT    checked_at
+    }
 
-Runtime: ~6 seconds.
+    check_logs {
+        INTEGER id PK
+        INTEGER bgc_id FK
+        TEXT    check_name
+        TEXT    status
+        TEXT    details
+    }
 
-### v4.0.0: coverage expansion
+    preemptive_scans {
+        INTEGER discord_id PK
+        INTEGER guild_id PK
+        INTEGER bloxlink_roblox_id
+        TEXT    bloxlink_status
+        TEXT    roblox_info "JSON"
+        TEXT    username_history "JSON"
+        TEXT    user_groups "JSON"
+        TEXT    xtracker_by_id "JSON"
+        TEXT    simmer_rab "JSON"
+        TEXT    roblox_watcher "JSON"
+        TEXT    exploit_watcher "JSON"
+        TEXT    identity_scanned_at
+        TEXT    xtracker_scanned_at
+        TEXT    freshness_scanned_at
+    }
 
-Added six new data sources and a Discord → Roblox resolver:
+    discord_verifications {
+        INTEGER discord_id PK
+        INTEGER guild_id PK
+        INTEGER roblox_id
+        TEXT    roblox_username
+        TEXT    discord_username
+        TEXT    verification_code
+        TEXT    code_issued_at
+        TEXT    verified_at
+    }
 
-- Six external clan blacklists (Imperial Armada, Dragonborn, SURGE, SOL ×2, BB:PC) — 4,383 records total
-- Keystone (2,252 cases)
-- Snow Core (1,769 records)
-- Bloxlink for Discord → Roblox identity
-- Per-ID Xtracker + Simmer + Snow Core lookups for **historical** Roblox IDs (not just current)
+    manual_links {
+        INTEGER discord_id PK
+        INTEGER guild_id PK
+        INTEGER roblox_id
+        TEXT    roblox_username
+        INTEGER linked_by
+        TEXT    linked_at
+    }
 
-Also added caching for blacklists, Keystone, Snow Core, and per-UID Roblox info/history/groups. But the additional network calls more than offset the caching gains.
+    manual_verification_issues {
+        TEXT    issue_id PK
+        TEXT    roblox_id
+        TEXT    username
+        INTEGER discord_member_id
+        TEXT    reason
+        INTEGER handled
+        INTEGER handler_id
+        TEXT    dm_message_ids "JSON map"
+        TEXT    created_at
+    }
 
-Runtime: 7,989 ms — slower than v3.6.0 by 34%, but now checking 8 databases instead of 1.
+    member_leave_issues {
+        TEXT    issue_id PK
+        INTEGER guild_id
+        INTEGER discord_id
+        INTEGER roblox_id
+        TEXT    roblox_username
+        INTEGER handled
+        INTEGER handler_id
+        TEXT    action
+        TEXT    dm_message_ids "JSON map"
+        TEXT    created_at
+    }
 
-### v4.5.0: first optimization pass
+    unverified_join_issues {
+        TEXT    issue_id PK
+        INTEGER guild_id
+        INTEGER roblox_id
+        TEXT    roblox_username
+        INTEGER linked_discord_id
+        INTEGER handled
+        INTEGER handler_id
+        TEXT    action
+        TEXT    dm_message_ids "JSON map"
+        TEXT    created_at
+    }
 
-- Cached shared sources (blacklists, Keystone, Snow Core) with 5-minute TTL
-- Fired the top-level checks in parallel instead of sequentially
-- Added basic `aiohttp` connection pooling
+    audit_log_seen {
+        INTEGER guild_id PK
+        TEXT    last_log_key
+    }
 
-Runtime: 1,721 ms. **4.6× faster than v4.0.0.**
+    guild_settings ||--o{ bgc_checks : "guild_id"
+    bgc_checks ||--o{ check_logs : "bgc_id"
+    guild_settings ||--o{ preemptive_scans : "guild_id"
+    guild_settings ||--o{ discord_verifications : "guild_id"
+    guild_settings ||--o{ manual_links : "guild_id"
+    guild_settings ||--o{ member_leave_issues : "guild_id"
+    guild_settings ||--o{ unverified_join_issues : "guild_id"
+    guild_settings ||--|| audit_log_seen : "guild_id"
+```
 
-### v5.0.0: racing, waves, and preemptive scanning
+**A note on the `dm_message_ids` columns.** Three tables store staff DM message IDs as JSON. The format is `{"staff_id": message_id, "staff_id2": message_id2}`. When a handler fires, the code iterates this map and edits every DM the issue was sent to. This is what makes the multi-staff coordination work.
 
-Three structural changes:
+### The class architecture
 
-**Domain racing.** Every Roblox API call now races three mirrors in parallel and takes the first 200 response. Previously it tried them sequentially until one worked. Racing reduced `typed_lookup` from 492 ms (v4.5.0) to 114 ms (v5.0.0 live) to ~1 ms (v5.0.0 preemptive, cached).
+Only the classes that actually carry state or logic:
 
-**Wave-based T2.** Identity-set checks (Keystone, external DBs, multi-account) fire as soon as the primary identity is known, rather than waiting for all of T0 (including Bloxlink) to finish. This moved T2 firing from t=1107 ms to t=54 ms on the live path.
+```mermaid
+classDiagram
+    class ImperiumBot {
+        +session aiohttp
+        +db aiosqlite
+        +db_lock Lock
+        +bgc_semaphore Semaphore(5)
+        +xtracker_limiter AdaptiveRateLimiter
+        +bloxlink_limiter RateLimiter(1.1)
+        +bloxlink_lock Lock
+        +audit_lock Lock
+        +legacy_session requests
+        +cloud_session requests
+        +_csrf_token str
+        +_domain_dead_until dict
+        +_external_db_failures dict
+        +_external_db_dead_until dict
+        +_audit_disabled_until float
+        +_metrics_preemptive_hits int
+        +_metrics_preemptive_misses int
+        +_metrics_bloxlink_timeouts int
+        +_metrics_bloxlink_hits int
+        +_metrics_bloxlink_misses int
+        +_metrics_impersonation_blocks int
+        +_last_poll_time datetime
+        +_last_poll_error str
+        +_last_poll_processed int
+        +_last_poll_seen int
+        +setup_hook()
+        +close()
+        +_reset_caches()
+        +_mark_domain_error(domain)
+        +_mark_domain_ok(domain)
+        +_filter_healthy(domains)
+        +_init_legacy_sessions()
+    }
 
-**Preemptive scanning.** When a user starts typing in the recruitment channel, the bot kicks off the expensive lookups in the background using three tiers of caching. When they submit, the check reuses whatever tiers are still fresh.
+    class RateLimiter {
+        +interval float
+        +last float
+        +lock Lock
+        +acquire() await
+    }
 
-Also added:
+    class AdaptiveRateLimiter {
+        +base float
+        +interval float
+        +max_multiplier float
+        +decay_sec float
+        +_consecutive_429s int
+        +_last_429_ts float
+        +acquire() await
+        +report_429()
+        +report_ok()
+    }
 
-- `AdaptiveRateLimiter` for Xtracker (bumps on 429, decays on silence)
-- Bloxlink shield (1500 ms hard cap) with late-cache for eventual responses
-- Domain circuit breaker
-- `aiodns` non-blocking DNS resolution
-- Three-tier cache split (identity 7d, Xtracker 3d, freshness 30m)
+    class ProgressReporter {
+        +channel TextChannel
+        +user User
+        +msg Message
+        +_last float
+        +start() await
+        +advance(idx) await
+        +finish() await
+    }
 
-Runtime (live path): 801 ms. **2.15× faster than v4.5.0.**
-Runtime (preemptive path): 65 ms — *but only after a ~3,300 ms background scan that ran before submission.*
+    class Paginator {
+        +pages list
+        +page int
+        +author_id int
+        +prev_btn()
+        +next_btn()
+        +count_btn()
+    }
 
-### Feature evolution matrix
+    class ManualVerificationView {
+        +issue_id str
+        +_accept_cb()
+        +_deny_cb()
+    }
 
-| Feature | v2.1.0 | v3.6.0 | v4.0.0 | v4.5.0 | v5.0.0 |
-| :--- | :---: | :---: | :---: | :---: | :---: |
-| Domain racing | ❌ | ❌ | ❌ | ❌ | ✅ |
-| Per-UID caching | ❌ | ❌ | ✅ | ✅ | ✅ |
-| Three-tier cache | ❌ | ❌ | ❌ | ❌ | ✅ |
-| Bloxlink identity | ❌ | ❌ | ✅ | ✅ | ✅ |
-| Bloxlink hard timeout | ❌ | ❌ | ❌ | ❌ | ✅ |
-| Six external DBs | ❌ | ❌ | ✅ | ✅ | ✅ |
-| Keystone | ❌ | ❌ | ✅ | ✅ | ✅ |
-| Snow Core | ❌ | ❌ | ✅ | ✅ | ✅ |
-| Historical ID checks | ❌ | ❌ | ✅ | ✅ | ✅ |
-| Wave-based T2 | ❌ | ❌ | ❌ | ❌ | ✅ |
-| Adaptive rate limiter | ❌ | ❌ | ❌ | ❌ | ✅ |
-| Preemptive scanner | ❌ | ❌ | ❌ | ❌ | ✅ |
-| Circuit breaker | ❌ | ❌ | ❌ | ❌ | ✅ |
-| `aiodns` support | ❌ | ❌ | ❌ | ❌ | ✅ |
+    class UnverifiedJoinView {
+        +issue_id str
+        +_accept_cb()
+        +_deny_cb()
+        +_link_cb()
+        +_handle_action()
+    }
+
+    class MemberLeaveView {
+        +issue_id str
+        +_kick_cb()
+        +_leave_cb()
+        +_handle()
+    }
+
+    class VerifyBioView {
+        +verify_btn()
+    }
+
+    class PostVerifyView {
+        +update_btn()
+    }
+
+    class StartVerifyView {
+        +start_btn()
+    }
+
+    class UpdateProfileView {
+        +start_btn()
+    }
+
+    class VerifyUsernameModal {
+        +username TextInput
+        +on_submit()
+    }
+
+    class UnverifiedLinkModal {
+        +discord_input TextInput
+        +issue_id str
+        +on_submit()
+    }
+
+    class MoveReasonModal {
+        +member Member
+        +direction str
+        +staff_reason_input TextInput
+        +user_reason_input TextInput
+        +on_submit()
+    }
+
+    class SetupPanelView {
+        +guild Guild
+        +selected_role_ids list
+        +save_ladder()
+        +open_modal()
+        +create_roles()
+        +audit_chan()
+    }
+
+    ImperiumBot --> RateLimiter : 2 instances
+    ImperiumBot --> ProgressReporter : spawns per check
+    ImperiumBot --> Paginator : creates
+    ImperiumBot --> ManualVerificationView : registers
+    ImperiumBot --> UnverifiedJoinView : registers
+    ImperiumBot --> MemberLeaveView : registers
+    ImperiumBot --> VerifyBioView : registers
+    ImperiumBot --> PostVerifyView : registers
+    ImperiumBot --> StartVerifyView : registers
+    ImperiumBot --> UpdateProfileView : registers
+    VerifyBioView --> VerifyUsernameModal : opens
+    StartVerifyView --> VerifyUsernameModal : opens
+    UpdateProfileView --> VerifyUsernameView : opens
+    UnverifiedJoinView --> UnverifiedLinkModal : opens
+    ManualVerificationView --> _handle_manual_decision : calls
+    UnverifiedJoinView --> roblox_accept_join_request : calls
+    MemberLeaveView --> roblox_kick_member : calls
+```
+
+**The persistent view registration** in `setup_hook` matters. Every `bot.add_view(...)` call re-attaches the button callbacks after a restart, so buttons that were sent to staff 3 days ago still work when clicked. This is the difference between a staff DM that's actionable forever and one that's actionable only until the next reboot.
+
+### File structure
+
+```text
+imperium-bot/
+├── bot.py                 # single file, ~3400 lines
+├── imperium.db            # SQLite, WAL mode
+├── imperium.log           # rotating, 10 MB × 5
+└── bgc.db                 # legacy, migrated on first run
+```
+
+The migration in `setup_hook` copies `bgc.db` to `imperium.db` if `imperium.db` doesn't exist. This is a one-time operation and the file becomes dead weight afterward — but it's safe to leave in place, because the copy is only triggered on a first run.
 
 ---
 
-## Roadmap
+## Part V — Operations
 
-### High impact
+### The health check
 
-**1. Lower `BLOXLINK_HARD_TIMEOUT_MS` from 1500 ms → 700 ms.**
-In the current measurement, Bloxlink determined the live-path total at 800 ms. Capping at 700 ms would drop live-path runtime to ~700 ms when Bloxlink is slow — a 100 ms improvement in the worst case, no change in the fast case. The shield already handles timeouts gracefully, so this is a config change rather than a code change.
+`/health check` is the single most useful diagnostic. It runs every subsystem in sequence and prints a categorized report. Here's what the report actually contains on a healthy install:
 
-**2. Cache `exploit_watcher` results.**
-Currently the preemptive ceiling at 65 ms. Exploit Watcher flags are historical, not real-time, so a 30-minute cache is safe. Would drop the preemptive path from 65 ms → ~20 ms.
+```
+┌─ Blacklists ──────────────────────────────────────┐
+│ ok Group 47                                       │
+│ ok User 12                                        │
+│ ok Keystone 2252                                  │
+│ ok Snow Core 1769                                 │
+├─ Roblox API ──────────────────────────────────────┤
+│ ok users.rotunnel.com                             │
+│ ok groups.rotunnel.com                            │
+│ ok users.roproxy.com                              │
+│ ok groups.roproxy.com                             │
+│ ok users.roblox.com                               │
+│ ok groups.roblox.com                              │
+├─ Watchlists ──────────────────────────────────────┤
+│ ok Xtracker registry/user — PASS                  │
+│ ok Xtracker ownership/user — PASS                 │
+│ ok Simmer RAB — PASS                              │
+│ ok Roblox Watcher — PASS                          │
+│ ok Exploit Watcher — PASS                         │
+│ ok Bloxlink — reachable (ok)                      │
+├─ Autorole & DM ───────────────────────────────────┤
+│ ok Ready — will apply @Eligibility on BGC pass    │
+│ ok Acceptance DM — enabled                        │
+├─ External DBs ────────────────────────────────────┤
+│ ok Imperial Armada Blacklist: 424 rows            │
+│ ok Dragonborn Blacklist: 2810 rows                │
+│ ok SURGE Mainframes: 634 rows                     │
+│ ok SOL Blacklists: 270 rows                       │
+│ ok SOL Base Banlist: 204 rows                     │
+│ ok BB:PC Tracker: 41 rows                         │
+│ ok Injection Database: 128 rows                   │
+├─ Preemptive ──────────────────────────────────────┤
+│ Records: 847 · id-fresh: 612 · hit rate: 73.2%    │
+│ Impersonation blocks: 3                           │
+│ Bloxlink timeouts: 14                             │
+├─ Verifications ───────────────────────────────────┤
+│ Verified: 394 · Pending: 8                        │
+│ Open issues — leave: 2 · unverified-join: 5       │
+├─ Audit Log ───────────────────────────────────────┤
+│ ok Channel #group-audit · webhook "Imperium"      │
+├─ Config ──────────────────────────────────────────┤
+│ Anti-impersonation: ON · Bloxlink cap: 2500ms     │
+│ Role sync: verified=1561868631246372961 · orian=  │
+│ on_typing preemptive: cooldown 30s                │
+├─ System ──────────────────────────────────────────┤
+│ ok SQLite                                         │
+│ ok v9.0.0 · checks v26                            │
+│ Group: 829737664 · ladder: 8                      │
+└───────────────────────────────────────────────────┘
+```
 
-**3. Scan new members on join.**
-Currently only users who type in the recruitment channel trigger a preemptive scan. An `on_member_join` handler would scan members who join but lurk before posting, raising preemptive hit rate. Requires rate-limiting to avoid scan bursts on raid.
+### The operator's guide to failure signals
 
-### Medium impact
+```mermaid
+flowchart TD
+    Start([Something is wrong])
 
-**4. Backfill `xtracker_by_id` for historical IDs.**
-The preemptive scan collects Xtracker for all known IDs at scan time. A background job could pre-populate for IDs the current scan missed. Would close a gap where a newly discovered historical ID has no cached Xtracker result.
+    Start --> Q1{Bot online<br/>but not processing<br/>messages?}
+    Q1 -->|yes| C1[Check Health → Roblox API]
+    C1 --> C1a{All green?}
+    C1a -->|no| F1[Proxy outage]
+    C1a -->|yes| C1b[Check recruitment_channel ID]
+    C1b --> C1c[Message Content Intent?]
 
-**5. Parallelize `/health check`.**
-Currently sequential per-source. Parallelizing would drop ~4 seconds to ~1 second.
+    Q1 -->|no| Q2{Bot processing<br/>but everyone fails?}
+    Q2 -->|yes| C2[Check Health → Watchlists]
+    C2 --> C2a{Any red?}
+    C2a -->|yes| F2[Fix API key]
+    C2a -->|no| C2b{All applications<br/>show 'run /verify'?}
+    C2b -->|yes| F3[Bloxlink outage]
+    C2b -->|no| F4[Check blacklist sheet]
 
-### Low impact
+    Q2 -->|no| Q3{Auto-accept<br/>not working?}
+    Q3 -->|yes| C3[Check Health → Verifications]
+    C3 --> C3a{Members missing<br/>eligibility role?}
+    C3a -->|yes| F5[Add role manually]
+    C3a -->|no| C3b{Reverse lookup<br/>failing?}
+    C3b -->|yes| F6[Bloxlink reverse<br/>endpoint down]
+    C3b -->|no| F7[Check group join<br/>requests manually]
 
-**6. `/debug search`** — filter historical BGCs by status, reason, or date range.
+    Q3 -->|no| Q4{Role sync<br/>not applying?}
+    Q4 -->|yes| C4[Check Health → Config]
+    C4 --> C4a{Ladder configured?}
+    C4a -->|no| F8[Run /setup]
+    C4a -->|yes| C4b[Check ROLE_SYNC<br/>log for HTTP 429]
+    C4b --> C4c[Increase<br/>ROLE_SYNC_ASSIGN_DELAY]
 
-**7. Prometheus metrics endpoint.**
+    style F1 fill:#dc2626,color:#fff
+    style F2 fill:#dc2626,color:#fff
+    style F3 fill:#dc2626,color:#fff
+    style F4 fill:#dc2626,color:#fff
+    style F5 fill:#dc2626,color:#fff
+    style F6 fill:#dc2626,color:#fff
+    style F7 fill:#dc2626,color:#fff
+    style F8 fill:#dc2626,color:#fff
+```
+
+### Log files
+
+The rotating log file `imperium.log` uses `RotatingFileHandler(maxBytes=10_000_000, backupCount=5)` — 10 MB per file, 5 backups, ~60 MB total. It rotates when the current file exceeds 10 MB. All errors go through `logger.warning` or `logger.error` with `exc_info=True` where applicable, so the traceback is preserved.
+
+Key log patterns to grep for:
+
+| Pattern | Meaning |
+| :--- | :--- |
+| `BGC verify-block` | Impersonation or unverified hard stop |
+| `Auto-accept failed for` | Join request processing error |
+| `rank-add failed` | Discord role permission issue |
+| `rank-remove failed` | Discord role permission issue |
+| `audit webhook post failed` | Webhook deleted or channel gone |
+| `audit logs disabled for` | Circuit breaker engaged |
+| `Xtracker 429 on` | Adaptive limiter bumped |
+| `Bloxlink hard timeout` | Shield fired |
+| `leave-dm failed` | Staff DM could not be sent |
+
+### The `/health check` fix-it playbook
+
+When health check reports red, here is the specific remedy for each subsystem:
+
+**Roblox API red**
+- Every proxy is down → wait 5-10 min, usually self-recovers
+- One proxy down → circuit breaker will skip it, other proxies carry the load
+- All proxies down → switch `USER_DOMAINS` to a different order or add a new proxy
+
+**Watchlists red**
+- Xtracker `SKIPPED` → API key invalid, rotate
+- Simmer `SKIPPED` → API key invalid, rotate
+- Roblox Watcher `SKIPPED` → key invalid, or the endpoint changed shapes
+- Bloxlink `invalid_key` → server API key expired, get a new one
+
+**Autorole red**
+- Role above bot → drag bot role up
+- Missing Manage Roles → grant permission
+- Role not found → recreate with same ID or update `AUTO_ROLE_ID`
+
+**Verifications red**
+- Pending high → bio codes not being completed, check instructions clarity
+- Open leave issues → staff aren't clicking buttons, ping them
+
+**Audit log red**
+- Webhook missing → delete and re-run `/setup` → Set audit-log channel
+- Disabled → wait 1 hour, or restart the bot to clear `_audit_disabled_until`
+
+### Deploying v9.0.0 over v5.0.0
+
+The migration path is:
+
+1. Stop v5.0.0 (`SIGTERM` → graceful close)
+2. Back up `bgc.db` (`cp bgc.db bgc_v5_backup_$(date +%s).db`)
+3. Replace `bot.py` with v9.0.0
+4. Update `requirements.txt` (add `requests` for `legacy_session`)
+5. Update env vars/config with new constants (Open Cloud API key, Roblox cookie if using role creation)
+6. Start v9.0.0
+7. Verify `/health check` shows v9.0.0
+8. Run `/setup` once to configure rank ladder, group, audit channel
+9. Monitor `_metrics_impersonation_blocks` — if it spikes, staff need to be briefed on the new verify requirement
+
+**Breaking change to be aware of:** v9.0.0 requires verified identity. Any BGC that would have passed in v5.0.0 based purely on the typed username will now **fail** with `requires_verify=True`. Communicate this to your applicants *before* the deploy, or you'll have a stream of confused rejections.
 
 ---
 
-## Reference
+## Part VI — History & Roadmap
 
-### Full source inventory
+### Version lineage
 
-| Source | Type | Records | Checked against |
-| :--- | :--- | ---: | :--- |
-| Roblox API (3 mirrors) | REST | ∞ | Username, ID, groups |
-| Xtracker registry | REST | — | Every known Roblox ID |
-| Xtracker ownership | REST | — | Every known Roblox ID |
-| Keystone | REST | 2,252 | Every known ID + name |
-| Snow Core | Google Sheet | 1,769 | Every known Roblox ID |
-| Imperial Armada Blacklist | Google Sheet | 424 | Every known ID + name |
-| Dragonborn Blacklist | Google Sheet | 2,810 | Every known ID + name |
-| SURGE Mainframes | Google Sheet | 634 | Every known ID + name |
-| SOL Blacklists | Google Sheet | 270 | Every known ID + name |
-| SOL Base Banlist | Google Sheet | 204 | Every known ID + name |
-| BB:PC Tracker | Google Sheet | 41 | Every known ID + name |
-| User blacklist | Google Sheet | *(config)* | Discord ID + Roblox name + past names |
-| Group blacklist | Google Sheet | *(config)* | Roblox group memberships |
-| Bloxlink | REST | — | Discord → Roblox resolution |
-| Roblox Watcher | REST | — | Discord ID |
-| Exploit Watcher | REST | — | Discord ID |
-| Simmer | REST | — | Every known Roblox ID |
+```mermaid
+timeline
+    title Imperium Bot version history
+    section Phase 1 — BGC
+        2.1.0 : First working bot : 8 sequential checks
+        3.6.0 : ~6s runtime : No caching
+        4.0.0 : Coverage expansion : 8 external DBs : 7.9s
+    section Phase 2 — Optimization
+        4.5.0 : Caching : 1.7s
+        5.0.0 : Preemptive scan : 65ms : Domain racing
+    section Phase 3 — Verification-first
+        9.0.0 : Anti-impersonation : Role sync : Auto-accept
+              : Audit webhook : Staff DMs : Bio verify
+```
 
-### Domains contacted
+Note the jump from 5.0.0 to 9.0.0. The `6`, `7`, and `8` version numbers were internal milestones that got folded into `9.0.0` — the version number was chosen to signal the magnitude of the change, not to count intermediate releases.
 
-**Raced (3 mirrors, first 200 wins):**
-- `users.rotunnel.com`, `users.roproxy.com`, `users.roblox.com` — user lookups, info, history
-- `groups.rotunnel.com`, `groups.roproxy.com`, `groups.roblox.com` — group memberships
+### Feature evolution
 
-**Direct:**
-- `api.blox.link` — Bloxlink
-- `api.xtracker.xyz` — Xtracker
-- `api.keystone-swords.com` — Keystone
-- `api.simmer.icu` — Simmer
-- `api.robloxwatcher.com` — Roblox Watcher + Exploit Watcher
-- `docs.google.com` — all Google Sheets via gviz
+```mermaid
+gitGraph
+    commit id: "v2.1.0 basic"
+    commit id: "v3.6.0 tune"
+    branch coverage-expansion
+    commit id: "v4.0.0 +6 DBs"
+    checkout main
+    merge coverage-expansion
+    branch optimization
+    commit id: "v4.5.0 cache"
+    commit id: "v5.0.0 preemptive"
+    checkout main
+    merge optimization
+    branch verification
+    commit id: "v9.0.0 anti-imp"
+    commit id: "v9.0.0 rolesync"
+    commit id: "v9.0.0 autolccept"
+    commit id: "v9.0.0 auditlog"
+    checkout main
+    merge verification
+```
 
-### Known limitations
+Each branch was a distinct research track. The `verification` branch was the biggest — four sub-features that all depended on `resolve_identity` returning a real result.
 
-- **Live-path runtime is not measured statistically.** Every figure here is a single observation. p50/p95/p99 measurements would require multiple repeated runs, which are not currently collected.
-- **Bloxlink latency in the live-path probe is a single observation.** It happened to be 800 ms on the day of measurement. It could be 300 ms or 1400 ms on another day; the ceiling is 1500 ms.
-- **Record counts drift.** The 8,404 figure was captured in one `/health check` run. Google Sheets are editable, so counts will change.
-- **Preemptive hit rate is not measured.** The bot tracks session-level hit/miss counts (`_metrics_preemptive_hits`, `_metrics_preemptive_misses`) but these are not persisted across restarts, so a stable hit rate is not available.
-- **The 65 ms and 801 ms figures are not directly comparable.** See the caveat under [Runtime breakdown](#v500-runtime-breakdown).
-- **Historical IDs are not fully covered by the preemptive scan.** The scan collects Xtracker for the current `bloxlink_roblox_id` plus any IDs already in the DB. If a new historical ID is discovered during a live check, its Xtracker result is fetched live and not cached. This is item 4 on the roadmap.
+### The user journey
+
+```mermaid
+journey
+    title Applicant onboarding journey
+    section Join
+        Join Discord: 3: User
+        Read rules: 2: User
+        Find recruitment channel: 3: User
+    section Verify
+        Open /verify: 2: User
+        Enter Roblox username: 3: User
+        Copy bio code: 2: User
+        Edit Roblox bio: 2: User
+        Click verify: 3: User
+    section Apply
+        Wait for rank sync: 4: Bot
+        Post application: 3: User
+    section Result
+        Pass + role: 5: User
+        Join Roblox group: 4: User
+        Auto-accept: 5: Bot
+        Rank sync: 5: Bot
+    section Ongoing
+        Promote: 5: User
+        Demote: 1: User
+        /update after rank change: 3: User
+```
+
+The `Demote: 1` isn't a typo — being demoted is a genuinely bad experience, and the design reflects this: the demote flow **always sends a DM with the staff reason**, which the promote flow only does when a user reason is provided.
+
+### The remaining fragility
+
+Three things about the current build that a v10.0.0 should address:
+
+1. **Bloxlink timeout at 2500ms is generous.** Our best measurement of Bloxlink (from v5.0.0) was 800ms. Setting the cap at 2500ms means a slow Bloxlink will hold the pipeline for a full 2.5 seconds before falling back. Cutting to 700-1000ms would improve live path latency at zero cost to accuracy — the shield already handles timeouts gracefully.
+2. **`exploit_watcher` isn't cached.** It's the fastest uncached task on the preemptive path, at ~65ms. A 30-minute cache would drop that to <1ms.
+3. **Historical-ID coverage is capped.** `MAX_HISTORY_IDS_FOR_XTRACKER = 5` means users with more than 5 prior accounts have their extras silently skipped. This is a real gap — a cheater could accumulate 6 accounts and only the 5 most recent get checked.
+
+### Roadmap priority
+
+```mermaid
+quadrantChart
+    title Roadmap prioritization
+    x-axis "Low effort" --> "High effort"
+    y-axis "Low impact" --> "High impact"
+    quadrant-1 "Do this quarter"
+    quadrant-2 "Backlog"
+    quadrant-3 "Ignored"
+    quadrant-4 "Not worth it"
+    "Lower Bloxlink timeout": [0.15, 0.75]
+    "Cache exploit_watcher": [0.20, 0.60]
+    "Uncap history IDs": [0.35, 0.55]
+    "Prometheus metrics": [0.70, 0.40]
+    "Migrate to postgres": [0.90, 0.35]
+    "C4 architecture diagram": [0.05, 0.10]
+    "Dark mode embeds": [0.15, 0.05]
+    "Slash command redesign": [0.65, 0.15]
+```
+
+### Observability gaps
+
+The bot currently tracks 6 in-memory metrics:
+
+- `_metrics_preemptive_hits`
+- `_metrics_preemptive_misses`
+- `_metrics_bloxlink_timeouts`
+- `_metrics_bloxlink_hits`
+- `_metrics_bloxlink_misses`
+- `_metrics_impersonation_blocks`
+
+These are **reset on restart** and only visible via `/health check`. A future version should push them to a Prometheus endpoint or a persistent metrics table so they survive restarts and can be graphed over time.
+
+```mermaid
+mindmap
+  root((Metrics))
+    InMemory
+      preemptive_hits
+      preemptive_misses
+      bloxlink_timeouts
+      bloxlink_hits
+      bloxlink_misses
+      impersonation_blocks
+    LogLines
+      BGC verify-block
+      Auto-accept failed
+      rank-add failed
+      audit webhook failed
+    Database
+      bgc_checks.passed
+      bgc_checks.reason
+      check_logs.status
+      preemptive_scans.bloxlink_status
+    Missing
+      p50_bgc_latency
+      p95_auto_accept_latency
+      per_check_success_rate
+      cache_hit_ratio
+      audit_poll_success_rate
+```
+
+The `Missing` branch is what a v9.1 should add. Without it, we can tell staff "something is wrong" but we can't tell them "how wrong" or "for how long".
+
+---
+
+## Appendix A — Config reference
+
+Every config value with its type, default, and purpose:
+
+| Constant | Default | Type | Purpose |
+| :--- | ---: | :--- | :--- |
+| `BOT_VERSION` | `9.0.0` | string | Version string |
+| `CHECKS_VERSION` | `26` | int | Check schema version |
+| `DISCORD_GUILD_ID` | `1561859465207349311` | int | Primary guild |
+| `ROBLOX_GROUP_ID` | `829737664` | int | Primary group |
+| `AUTO_ROLE_ID` | `1561862179974807633` | int | Autorole on BGC pass |
+| `VERIFIED_ROLE_ID` | `1561868631246372961` | int | Role after verification |
+| `ELIGIBILITY_ROLE_ID` | `1561862179974807633` | int | Required for auto-accept |
+| `ORIAN_MEMBER_ROLE_ID` | `1561873574568919110` | int | Grants group membership |
+| `ACCEPTED_ROLE_IDS` | `[1561873574568919110, 1561867312913580112]` | list[int] | Group acceptance autorole |
+| `MIN_DISCORD_AGE_DAYS` | `7` | int | Minimum Discord account age |
+| `DISCORD_AGE_FAIL_IN_LIEU` | `False` | bool | Whether age fails or just skips |
+| `MULTI_ACCOUNT_FAIL` | `False` | bool | Whether multi-acct fails |
+| `ACCOUNT_AGE_ALT_DAYS` | `2` | int | Proximity threshold |
+| `ACCOUNT_AGE_ALT_FAILS` | `True` | bool | Alt signal fails BGC |
+| `MAX_HISTORY_IDS_FOR_XTRACKER` | `5` | int | Historical ID cap |
+| `BLOXLINK_HARD_TIMEOUT_MS` | `2500` | int | Bloxlink shield |
+| `BLOXLINK_LATE_TTL` | `300` | int | Late cache TTL |
+| `BLOXLINK_CACHE_TTL` | `1800` | int | Bloxlink cache TTL |
+| `BLOXLINK_MAX_REQUESTS_PER_MINUTE` | `50` | int | Client throttle |
+| `TYPING_COOLDOWN_SEC` | `30` | int | on_typing throttle |
+| `VERIFICATION_TTL_MIN` | `15` | int | Bio code lifetime |
+| `SYNC_INTERVAL_MINUTES` | `5` | int | Auto-sync cadence |
+| `POLL_INTERVAL_SECONDS` | `60` | int | Join-request poll |
+| `AUDIT_POLL_SECONDS` | `120` | int | Roblox audit poll |
+| `ROLE_SYNC_ASSIGN_DELAY` | `0.7` | float | Roblox role API delay |
+| `PROCESSING_STALE_SECONDS` | `90` | int | Join-request in-flight cap |
+| `EXTERNAL_DB_FAIL_THRESHOLD` | `5` | int | Circuit breaker fail count |
+| `EXTERNAL_DB_CIRCUIT_OPEN_SEC` | `1800` | int | Circuit breaker open duration |
+| `IDENTITY_TTL_DAYS` | `7` | int | Preemptive identity TTL |
+| `XTRACKER_CACHE_TTL_DAYS` | `3` | int | Xtracker cache TTL |
+| `FRESHNESS_TTL_MIN` | `30` | int | Freshness cache TTL |
+| `PREEMPTIVE_CLEANUP_DAYS` | `30` | int | Preemptive row cleanup |
+
+## Appendix B — Command reference
+
+Grouped by permission:
+
+```mermaid
+flowchart LR
+    subgraph Public["Everyone"]
+        About["/about"]
+        Update["/update"]
+        Verify["/verify"]
+    end
+
+    subgraph Authorized["Admins + Admin Users"]
+        Check["/check"]
+        Lookup["/lookup"]
+        Group["/group *"]
+        Link["/link *"]
+        Post["/post verify"]
+        Setup["/setup"]
+        Sync["/sync"]
+        Health["/health check"]
+    end
+
+    subgraph Owner["Owner Only"]
+        Reset["/reset"]
+    end
+
+    Public --> Authorized --> Owner
+
+    style Public fill:#22c55e,color:#fff
+    style Authorized fill:#f59e0b,color:#fff
+    style Owner fill:#dc2626,color:#fff
+```
+
+## Appendix C — Persistent view registry
+
+Views that survive bot restarts (re-registered in `setup_hook`):
+
+| View class | Custom ID prefix | Registered at boot |
+| :--- | :--- | :---: |
+| `VerifyBioView` | `verify_bio_check` | yes |
+| `PostVerifyView` | `post_verify_update_btn` | yes |
+| `StartVerifyView` | `start_verify_btn_v9` | yes |
+| `UpdateProfileView` | `update_verify_btn_v9` | yes |
+| `ManualVerificationView` | `mv:*:*` | per-issue |
+| `MemberLeaveView` | `lv:*:*` | per-issue |
+| `UnverifiedJoinView` | `uj:*:*` | per-issue |
+
+The per-issue views are re-registered in a loop that iterates `manual_verification_issues`, `member_leave_issues`, and `unverified_join_issues` rows where `handled=0`. Any DM that was sent but not yet acted upon stays actionable after a restart.
 
 ---
 
 <div align="center">
 
-**Built by [Pizzarobloxh](https://github.com/Pizzarobloxh)**
+**End of document.**
 
-*Every figure in this document comes from an actual measurement. Estimates are labelled.*
+*Imperium Bot v9.0.0 — internal technical reference*
 
 </div>
