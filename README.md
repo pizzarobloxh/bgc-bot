@@ -181,7 +181,7 @@ Cache warm-up runs for the first ~10 seconds. Subsequent applications use warm c
 
 ## Documentation
 
-- **[Operating Documents](OPERATING_DOCUMENTS.md)** — architecture, performance measurements, diagrams, implementation history, roadmap
+- **[Operating Documents](operating_documents.md)** — architecture, performance measurements, diagrams, implementation history, roadmap
 - **[Terms of Service](TERMS.md)** — rules for using the bot
 - **[Privacy Policy](PRIVACY.md)** — what data the bot collects and stores
 
